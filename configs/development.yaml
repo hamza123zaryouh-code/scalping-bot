@@ -1,0 +1,14 @@
+platform:
+  environment: "development"
+
+api:
+  reload: true
+  workers: 1
+  rate_limit_per_minute: 300
+
+logging:
+  level: "DEBUG"
+
+security:
+  access_token_expire_minutes: 480
+  audit_log_enabled: false

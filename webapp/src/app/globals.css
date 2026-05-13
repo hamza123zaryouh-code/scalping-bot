@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(1rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+:root {
+  --bg: #09090b;
+  --bg-card: #18181b;
+  --bg-soft: #27272a;
+  --text: #f4f4f5;
+  --text-muted: #a1a1aa;
+  --border: #27272a;
+  --profit: #10b981;
+  --loss: #ef4444;
+}
+
+html[data-theme='light'] {
+  --bg: #f4f4f5;
+  --bg-card: #ffffff;
+  --bg-soft: #e4e4e7;
+  --text: #18181b;
+  --text-muted: #52525b;
+  --border: #d4d4d8;
+}
+
+html,
+body {
+  background: radial-gradient(circle at top right, rgba(16, 185, 129, 0.1), transparent 35%), var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", "Trebuchet MS", "Verdana", sans-serif;
+}
+
+* {
+  border-color: var(--border);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-card);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #52525b;
+  border-radius: 9999px;
+}
+
+input[type='date']::-webkit-calendar-picker-indicator {
+  filter: invert(0.85);
+  cursor: pointer;
+}
+
+html[data-theme='light'] input[type='date']::-webkit-calendar-picker-indicator {
+  filter: invert(0.2);
+}

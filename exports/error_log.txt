@@ -1,0 +1,2 @@
+2026-05-11 12:41:54 | Telegram settings incomplete: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing in .env
+2026-05-11 12:42:54 | Telegram settings incomplete: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing in .env

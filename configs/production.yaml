@@ -1,0 +1,14 @@
+platform:
+  environment: "production"
+
+api:
+  reload: false
+  workers: 4
+  rate_limit_per_minute: 60
+
+logging:
+  level: "WARNING"
+
+security:
+  access_token_expire_minutes: 30
+  audit_log_enabled: true

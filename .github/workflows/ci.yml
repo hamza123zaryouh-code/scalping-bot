@@ -1,0 +1,103 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.10"
+
+jobs:
+  python-lint:
+    name: Python Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install ruff
+        run: pip install ruff
+      - name: Run ruff
+        run: ruff check backend autonomous_xauusd --select E,F --ignore E501
+
+  python-tests:
+    name: Python Tests
+    runs-on: ubuntu-latest
+    needs: python-lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Run pytest
+        run: pytest tests/unit tests/integration tests/regression tests/smoke
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: coverage.xml
+        continue-on-error: true
+
+  webapp-tests:
+    name: Webapp Lint and Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - name: Install webapp dependencies
+        working-directory: webapp
+        run: npm ci
+      - name: Run webapp lint
+        working-directory: webapp
+        run: npm run lint
+      - name: Run webapp tests
+        working-directory: webapp
+        run: npm test
+
+  webapp-supabase-integration:
+    name: Webapp Supabase Integration
+    runs-on: ubuntu-latest
+    needs: webapp-tests
+    if: ${{ secrets.SUPABASE_DB_URL != '' && secrets.NEXT_PUBLIC_SUPABASE_URL != '' && secrets.SUPABASE_SERVICE_ROLE_KEY != '' && secrets.BACKEND_JWT_SECRET != '' }}
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      BACKEND_JWT_SECRET: ${{ secrets.BACKEND_JWT_SECRET }}
+      RUN_SUPABASE_INTEGRATION: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - name: Install Python dependencies
+        run: pip install -e ".[dev]"
+      - name: Install webapp dependencies
+        working-directory: webapp
+        run: npm ci
+      - name: Apply Supabase schema
+        run: python scripts/apply_supabase_schema.py
+      - name: Run live Supabase integration tests
+        working-directory: webapp
+        run: npm run test:integration:supabase

@@ -26,6 +26,245 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
+
+def safe_float(value, default=0.0):
+    """Best-effort float conversion used by the live bot feature pipeline."""
+    try:
+        if value is None:
+            return float(default)
+        if pd.isna(value):
+            return float(default)
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _ema(series, span):
+    return series.ewm(span=span, adjust=False).mean()
+
+
+def add_indicators(df):
+    """Compatibility wrapper expected by indicators.py for M1 feature prep."""
+    data = df.copy()
+
+    if 'volume' not in data.columns:
+        data['volume'] = 0.0
+    if 'spread' not in data.columns:
+        data['spread'] = 0.0
+
+    data['ema8'] = _ema(data['close'], 8)
+    data['ema21'] = _ema(data['close'], 21)
+    data['ema50'] = _ema(data['close'], 50)
+    data['rsi14'] = bereken_rsi(data['close'], 14)
+    data['atr14'] = bereken_atr(data['high'], data['low'], data['close'], 14)
+    data['adx14'] = bereken_adx(data['high'], data['low'], data['close'], 14)
+    data['volume_ma20'] = data['volume'].rolling(20).mean()
+    data['cross_up'] = (data['ema8'] > data['ema21']) & (data['ema8'].shift(1) <= data['ema21'].shift(1))
+    data['cross_down'] = (data['ema8'] < data['ema21']) & (data['ema8'].shift(1) >= data['ema21'].shift(1))
+
+    return data
+
+
+def make_m5_bars(df):
+    """Resample M1 candles to M5 for directional bias."""
+    data = df.copy()
+    if not isinstance(data.index, pd.DatetimeIndex):
+        if 'time' in data.columns:
+            data['time'] = pd.to_datetime(data['time'])
+            data = data.set_index('time')
+        else:
+            raise ValueError("Expected DatetimeIndex or 'time' column in market data")
+
+    agg = {
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum',
+        'spread': 'mean',
+    }
+    available_agg = {k: v for k, v in agg.items() if k in data.columns}
+    m5 = data.resample('5min').agg(available_agg).dropna(subset=['open', 'high', 'low', 'close'])
+
+    m5['ema50'] = _ema(m5['close'], 50)
+    m5['m5_bias'] = np.where(m5['close'] >= m5['ema50'], 'bull', 'bear')
+    return m5
+
+
+def apply_m5_bias(m1, m5):
+    """Project latest M5 bias onto each M1 bar using backward asof join."""
+    left = m1.sort_index().copy()
+    right = m5[['m5_bias']].sort_index().copy()
+
+    merged = pd.merge_asof(
+        left,
+        right,
+        left_index=True,
+        right_index=True,
+        direction='backward',
+    )
+    merged['m5_bias'] = merged['m5_bias'].fillna('neutral')
+    return merged
+
+
+def simulate_trades(
+    enriched,
+    starting_capital=160000.0,
+    risk_per_trade=0.0025,
+    sl_atr_multiplier=1.5,
+    tp_atr_multiplier=3.0,
+    max_daily_loss=8000.0,
+    max_total_loss=16000.0,
+    min_volume_multiplier=1.10,
+    adx_min_strength=22.0,
+    commission=0.35,
+):
+    """Run a lightweight replay of the live XAUUSD signal logic on enriched bars."""
+    if enriched is None or len(enriched) < 5:
+        return pd.DataFrame(), pd.DataFrame(columns=["timestamp", "equity"]).set_index("timestamp")
+
+    capital = float(starting_capital)
+    day_start_equity = float(starting_capital)
+    current_day = pd.Timestamp(enriched.index[0]).date()
+    min_allowed_equity = float(starting_capital - max_total_loss)
+    position = None
+    trades = []
+    equity_points = []
+
+    for idx in range(2, len(enriched)):
+        bar_time = pd.Timestamp(enriched.index[idx])
+        row = enriched.iloc[idx]
+        previous = enriched.iloc[idx - 1]
+
+        if bar_time.date() != current_day:
+            current_day = bar_time.date()
+            day_start_equity = capital
+
+        if position is not None:
+            side_mult = 1.0 if position["side"] == "long" else -1.0
+            exit_price = None
+            exit_reason = None
+
+            if position["side"] == "long":
+                if safe_float(row.get("low", row["close"])) <= position["stop_loss"]:
+                    exit_price = position["stop_loss"]
+                    exit_reason = "SL"
+                elif safe_float(row.get("high", row["close"])) >= position["take_profit"]:
+                    exit_price = position["take_profit"]
+                    exit_reason = "TP"
+                elif bool(row.get("cross_down", False)):
+                    exit_price = safe_float(row["close"])
+                    exit_reason = "SignalFlip"
+            else:
+                if safe_float(row.get("high", row["close"])) >= position["stop_loss"]:
+                    exit_price = position["stop_loss"]
+                    exit_reason = "SL"
+                elif safe_float(row.get("low", row["close"])) <= position["take_profit"]:
+                    exit_price = position["take_profit"]
+                    exit_reason = "TP"
+                elif bool(row.get("cross_up", False)):
+                    exit_price = safe_float(row["close"])
+                    exit_reason = "SignalFlip"
+
+            if exit_price is not None:
+                gross_pnl = (exit_price - position["entry_price"]) * side_mult * position["size"]
+                pnl = gross_pnl - commission
+                capital += pnl
+                trades.append(
+                    {
+                        "side": position["side"],
+                        "entry_time": position["entry_time"],
+                        "exit_time": bar_time,
+                        "entry_price": position["entry_price"],
+                        "exit_price": exit_price,
+                        "stop_loss": position["stop_loss"],
+                        "take_profit": position["take_profit"],
+                        "size": position["size"],
+                        "pnl": pnl,
+                        "cumulative_equity": capital,
+                        "exit_reason": exit_reason,
+                    }
+                )
+                position = None
+
+        equity_points.append({"timestamp": bar_time, "equity": capital})
+
+        if position is not None:
+            continue
+
+        atr = safe_float(previous.get("atr14", 0.0))
+        if atr <= 0:
+            continue
+
+        estimated_trade_risk = capital * risk_per_trade
+        daily_remaining = capital - (day_start_equity - max_daily_loss)
+        total_remaining = capital - min_allowed_equity
+        if daily_remaining <= estimated_trade_risk or total_remaining <= estimated_trade_risk:
+            continue
+
+        rsi = safe_float(previous.get("rsi14", 0.0))
+        adx = safe_float(previous.get("adx14", 0.0))
+        volume = safe_float(previous.get("volume", 0.0))
+        volume_ma = safe_float(previous.get("volume_ma20", 0.0))
+        close_price = safe_float(previous.get("close", 0.0))
+        ema50 = safe_float(previous.get("ema50", 0.0))
+        bias = str(previous.get("m5_bias", "neutral"))
+
+        long_entry = (
+            adx >= adx_min_strength
+            and bool(previous.get("cross_up", False))
+            and bias == "bull"
+            and close_price > ema50
+            and 53 <= rsi <= 67
+            and volume > volume_ma * min_volume_multiplier
+        )
+        short_entry = (
+            adx >= adx_min_strength
+            and bool(previous.get("cross_down", False))
+            and bias == "bear"
+            and close_price < ema50
+            and 33 <= rsi <= 47
+            and volume > volume_ma * min_volume_multiplier
+        )
+
+        if not long_entry and not short_entry:
+            continue
+
+        stop_distance = atr * sl_atr_multiplier
+        take_distance = atr * tp_atr_multiplier
+        if stop_distance <= 0:
+            continue
+
+        entry_price = safe_float(row.get("open", row["close"]))
+        size = estimated_trade_risk / stop_distance
+        if size <= 0:
+            continue
+
+        if long_entry:
+            position = {
+                "side": "long",
+                "entry_time": bar_time,
+                "entry_price": entry_price,
+                "stop_loss": entry_price - stop_distance,
+                "take_profit": entry_price + take_distance,
+                "size": size,
+            }
+        elif short_entry:
+            position = {
+                "side": "short",
+                "entry_time": bar_time,
+                "entry_price": entry_price,
+                "stop_loss": entry_price + stop_distance,
+                "take_profit": entry_price - take_distance,
+                "size": size,
+            }
+
+    trades_df = pd.DataFrame(trades)
+    equity_df = pd.DataFrame(equity_points)
+    if not equity_df.empty:
+        equity_df = equity_df.set_index("timestamp")
+    return trades_df, equity_df
+
 # ─── MAPPEN AANMAKEN ALS ZE NOG NIET BESTAAN ─────────────────
 os.makedirs('results', exist_ok=True)
 os.makedirs('logs', exist_ok=True)
@@ -109,6 +348,22 @@ def bereken_atr(high, low, close, periode=14):
         (low  - close.shift(1)).abs(),
     ], axis=1).max(axis=1)
     return tr.ewm(com=periode - 1, adjust=False).mean()
+
+
+def bereken_adx(high, low, close, periode=14):
+    """ADX meet trendsterkte: >22 = trending, <20 = zijwaarts."""
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = ((up_move > down_move) & (up_move > 0)) * up_move
+    minus_dm = ((down_move > up_move) & (down_move > 0)) * down_move
+    atr = bereken_atr(high, low, close, periode)
+    atr_safe = atr.replace(0, float('nan'))
+    plus_di = 100 * plus_dm.ewm(com=periode - 1, adjust=False).mean() / atr_safe
+    minus_di = 100 * minus_dm.ewm(com=periode - 1, adjust=False).mean() / atr_safe
+    di_sum = (plus_di + minus_di).replace(0, float('nan'))
+    dx = 100 * (plus_di - minus_di).abs() / di_sum
+    adx = dx.ewm(com=periode - 1, adjust=False).mean()
+    return adx.fillna(0.0)
 
 
 def check_sessie(datum):
@@ -708,6 +963,53 @@ def maak_grafiek(df, verb_trades, verb_equity, orig_equity, fast_ma, slow_ma):
     plt.savefig(bestand, dpi=150, bbox_inches='tight', facecolor='#0D0D0D')
     print(f"  Grafiek opgeslagen: {bestand}")
     plt.show()
+
+
+# ─────────────────────────────────────────────────────────────
+# LIVE BOT HELPER FUNCTIONS (used by indicators.py)
+# ─────────────────────────────────────────────────────────────
+
+def safe_float(value, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+        return default if (result != result) else result  # NaN check
+    except (TypeError, ValueError):
+        return default
+
+
+def add_indicators(df: "pd.DataFrame") -> "pd.DataFrame":
+    df = df.copy()
+    df["ema8"]        = df["close"].ewm(span=8,  adjust=False).mean()
+    df["ema21"]       = df["close"].ewm(span=21, adjust=False).mean()
+    df["ema50"]       = df["close"].ewm(span=50, adjust=False).mean()
+    df["rsi14"]       = bereken_rsi(df["close"], 14)
+    df["atr14"]       = bereken_atr(df["high"], df["low"], df["close"], 14)
+    df["adx14"]       = bereken_adx(df["high"], df["low"], df["close"], 14)
+    df["volume_ma20"] = df["volume"].rolling(window=20).mean()
+    df["cross_up"]    = (df["ema8"] > df["ema21"]) & (df["ema8"].shift(1) <= df["ema21"].shift(1))
+    df["cross_down"]  = (df["ema8"] < df["ema21"]) & (df["ema8"].shift(1) >= df["ema21"].shift(1))
+    return df.dropna()
+
+
+def make_m5_bars(m1_df: "pd.DataFrame") -> "pd.DataFrame":
+    m5 = m1_df.resample("5min").agg({
+        "open":   "first",
+        "high":   "max",
+        "low":    "min",
+        "close":  "last",
+        "volume": "sum",
+    }).dropna()
+    m5["ema8"]  = m5["close"].ewm(span=8,  adjust=False).mean()
+    m5["ema21"] = m5["close"].ewm(span=21, adjust=False).mean()
+    return m5
+
+
+def apply_m5_bias(m1: "pd.DataFrame", m5: "pd.DataFrame") -> "pd.DataFrame":
+    m1 = m1.copy()
+    bias = m5["ema8"] > m5["ema21"]
+    bias_reindexed = bias.reindex(m1.index, method="ffill")
+    m1["m5_bias"] = bias_reindexed.map({True: "bull", False: "bear"}).fillna("bear")
+    return m1
 
 
 # ─────────────────────────────────────────────────────────────

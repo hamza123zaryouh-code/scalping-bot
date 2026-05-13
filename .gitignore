@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment / secrets — NEVER commit these
+.env
+*.env.local
+secrets/
+*.key
+*.pem
+*.p12
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Testing
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Trading artefacts (large — tracked in exports/ only)
+*.pkl
+*.h5
+results/backtest_*.csv
+results/backtest_*.png
+
+# Logs (track folder structure, not log content)
+logs/*.log
+live_logs/*.log
+live_logs/bot_state.json
+live_logs/
+exports/latest/
+__pycache__/
+*.pyc
+
+# Node.js dependencies (large — exclude node_modules)
+node_modules/
+
+# Next.js build output
+.next/
+out/

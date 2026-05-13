@@ -1,0 +1,98 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xauusd-trading-platform"
+version = "1.0.0"
+description = "Production-grade FTMO-compliant XAUUSD algorithmic trading platform"
+requires-python = ">=3.10"
+authors = [{ name = "XAUUSD Trading" }]
+license = { text = "Proprietary" }
+
+dependencies = [
+    # Core data & analysis
+    "pandas>=2.0",
+    "numpy>=1.26",
+    "scipy>=1.12",
+    "scikit-learn>=1.4",
+    "SQLAlchemy>=2.0",
+    "psycopg[binary]>=3.2",
+    # Market data
+    "yfinance>=0.2.36",
+    "ccxt>=4.3",
+    "MetaTrader5>=5.0; platform_system == 'Windows'",
+    # Charting
+    "matplotlib>=3.8",
+    "plotly>=5.20",
+    # API backend
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-jose[cryptography]>=3.3",
+    "passlib[bcrypt]>=1.7",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27",
+    # Async
+    "anyio>=4.3",
+    # Config
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    # Dashboard
+    "streamlit>=1.35",
+    "streamlit-extras>=0.4",
+    # PDF reports
+    "reportlab>=4.2",
+    "fpdf2>=2.7",
+    "Pillow>=10.3",
+    # Telegram
+    "requests>=2.32",
+    "python-telegram-bot>=21.6",
+    # Logging
+    "structlog>=24.1",
+    # Monitoring
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "pytest-mock>=3.14",
+    "httpx>=0.27",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "types-requests>=2.32",
+    "types-PyYAML>=6.0",
+]
+mt5 = ["MetaTrader5>=5.0"]
+
+[project.scripts]
+xauusd-api    = "backend.main:serve"
+xauusd-dash   = "frontend.app:run"
+xauusd-watch  = "monitoring.watchdog:main"
+xauusd-autonomous = "autonomous_xauusd.main:main"
+xauusd-auto-dash = "autonomous_xauusd.dashboard_layer:main"
+
+[tool.pytest.ini_options]
+testpaths      = ["tests"]
+asyncio_mode   = "auto"
+addopts        = "--cov=backend --cov=. --cov-report=term-missing --cov-report=xml -v"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+ignore_missing_imports = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["autonomous_xauusd*", "backend*", "frontend*", "monitoring*"]

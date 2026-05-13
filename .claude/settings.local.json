@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(python -c ' *)",
-      "Bash(dir \"c:\\\\Users\\\\hamza\\\\Downloads\\\\XAUUSD\\\\results\" /B)"
+      "Bash(dir \"c:\\\\Users\\\\hamza\\\\Downloads\\\\XAUUSD\\\\results\" /B)",
+      "Bash(npm install *)"
     ]
   }
 }

@@ -1,0 +1,101 @@
+# ============================================================
+# XAUUSD Trading Platform — Default Configuration
+# ============================================================
+# All values can be overridden via environment variables.
+# Environment-specific files: development.yaml, production.yaml
+
+platform:
+  name: "XAUUSD Trading Platform"
+  version: "1.0.0"
+  environment: "development"      # development | production
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1
+  reload: true
+  allowed_origins:
+    - "http://localhost:8501"
+    - "http://localhost:3000"
+  rate_limit_per_minute: 120
+
+dashboard:
+  host: "localhost"
+  port: 8501
+  theme: "dark"
+
+# ── Trading ─────────────────────────────────────────────────
+trading:
+  symbol: "XAUUSD"
+  timeframe: "M1"
+  session_start_hour: 3
+  session_end_hour: 17
+  allowed_weekdays: [0, 1, 2, 3, 4]   # Mon-Fri
+  check_interval_seconds: 20
+  history_bars: 350
+  max_open_positions: 1
+  max_spread_points: 450.0
+  duplicate_signal_cooldown_minutes: 5
+  min_volume_multiplier: 1.10
+
+# ── Risk / FTMO ─────────────────────────────────────────────
+risk:
+  starting_capital: 160000.0
+  risk_per_trade: 0.0025            # 0.25 % of equity
+  stop_loss_atr_multiplier: 1.5
+  take_profit_atr_multiplier: 3.0
+  ftmo_max_daily_loss: 8000.0       # 5 % of 160k
+  ftmo_max_total_loss: 16000.0      # 10 % of 160k
+  safety_daily_buffer: 2000.0
+  safety_total_buffer: 3000.0
+
+# ── Telegram ────────────────────────────────────────────────
+telegram:
+  send_heartbeat: false
+  heartbeat_interval_minutes: 180
+  max_messages_per_day: 5
+
+# ── MT5 ─────────────────────────────────────────────────────
+mt5:
+  mode: "paper"                     # paper | demo | live
+  allow_live_account: false
+  magic_number: 20260511
+  order_comment: "FTMO XAUUSD"
+
+# ── Backtest ────────────────────────────────────────────────
+backtest:
+  start_date: "2026-01-01"
+  end_date: "2026-05-11"
+  starting_capital: 160000.0
+  commission: 0.35
+  spread_cost: 0.25
+
+# ── Data governance ─────────────────────────────────────────
+data:
+  raw_dir: "datasets/raw"
+  cleaned_dir: "datasets/cleaned"
+  processed_dir: "datasets/processed"
+  snapshots_dir: "datasets/snapshots"
+  metadata_dir: "datasets/metadata"
+
+# ── Artifact management ─────────────────────────────────────
+artifacts:
+  exports_dir: "exports"
+  latest_dir: "exports/latest"
+  history_dir: "exports/history"
+  reports_dir: "exports/reports"
+  max_history_days: 30              # auto-cleanup after N days
+
+# ── Logging ─────────────────────────────────────────────────
+logging:
+  level: "INFO"
+  log_dir: "logs"
+  max_file_size_mb: 50
+  backup_count: 7
+
+# ── Security ────────────────────────────────────────────────
+security:
+  jwt_algorithm: "HS256"
+  access_token_expire_minutes: 60
+  api_key_header: "X-API-Key"
+  audit_log_enabled: true

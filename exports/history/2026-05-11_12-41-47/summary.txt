@@ -1,0 +1,31 @@
+FTMO XAUUSD EXECUTIVE SUMMARY
+Generated: 2026-05-11 12:41:47
+FTMO status: PASS
+Challenge status: PASSED
+Final capital: EUR 178,516.21
+Total return: 11.57%
+Profit factor: 2.21
+Sharpe ratio: 1.62
+Max drawdown: EUR 3,774.64 | -7.63%
+Best month: 2026-01
+Worst month: 2026-02
+Overtrading detected: YES
+Robustness score: 77.00/100
+Fail probability: 19.57%
+Institutional conclusion: Institutional-grade structure with strong FTMO survivability under controlled execution.
+
+INSTITUTIONAL FTMO QUANT CONCLUSION
+Statistical edge significance: MARGINAL | p-value=0.1118 | mean-trade 95% CI [-62.28, 832.28]
+Scalability: ACCEPTABLE | execution drag score=95.0/100
+Robustness: ROBUST | robustness score=77.0/100 | survivability score=88.0/100
+System overtrading: YES | suppression removed 38.7% of trades
+Primary drawdown clustering driver: chop/compression sequences with low ADX, high candle overlap and volatility fake-outs, amplified after consecutive losses.
+Dangerous regimes: NO_TRADE, CHOP, HIGH_RISK
+Profitable regimes: EXPANSION, RANGE, TREND
+Largest structural weakness: the baseline system keeps firing in low-quality transition regimes instead of waiting for confirmed expansion or strong trend continuation.
+First optimisation priority: hard trade suppression in CHOP/COMPRESSION plus automatic risk contraction after clustered losses.
+Structural drawdown reduction path: enforce regime gating, keep risk at 0.20x to 0.40x in non-trend conditions, apply daily/weekly profit locks, and stop immediately when drawdown clusters appear.
+Live prop-firm deployment verdict: SUITABLE WITH V3 CONTROLS
+Why February was weak: PF 1.00, return -0.03% and the highest concentration of CHOP/RANGE exposures.
+Why April was strong: PF 1.93, return 8.40% and cleaner TREND/EXPANSION alignment with lower trade density.
+Why fewer trades are more efficient: the densest months (2026-01, 2026-02) produced lower expectancy than the selective trend months.
