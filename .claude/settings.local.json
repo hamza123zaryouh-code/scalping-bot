@@ -3,7 +3,9 @@
     "allow": [
       "Bash(python -c ' *)",
       "Bash(dir \"c:\\\\Users\\\\hamza\\\\Downloads\\\\XAUUSD\\\\results\" /B)",
-      "Bash(npm install *)"
+      "Bash(npm install *)",
+      "Bash(pip show *)",
+      "Bash(python -c \"import yfinance; import pandas; import numpy; print\\('yfinance:', yfinance.__version__, 'pandas:', pandas.__version__, 'numpy:', numpy.__version__\\)\")"
     ]
   }
 }

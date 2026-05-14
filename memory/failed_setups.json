@@ -1,0 +1,31 @@
+[
+  {
+    "versie": "v16",
+    "variant": "V16-Conservative",
+    "datum": "20260514_133230",
+    "pnl_eur": 21210.1905881259,
+    "sig_per_dag": 1.8058252427184467,
+    "wr": 40.86021505376344,
+    "pf": 1.8605780720194138,
+    "max_dd": 2.9301361559369465,
+    "cfg": {
+      "risk_a": 0.0025,
+      "risk_b": 0.002,
+      "risk_c": 0.0015,
+      "adx_min": 20,
+      "h4adx_min": 18,
+      "vol_mult": 1.02,
+      "tp1_r": 1.5,
+      "tp2_r": 2.5,
+      "tp3_r": 4.0,
+      "tp1_pct": 0.35,
+      "tp2_pct": 0.3,
+      "sl_atr": 1.5,
+      "sl_max": 2.0,
+      "max_dag": 4,
+      "sl_dag_max": 2,
+      "cooldown_h": 3,
+      "trailing": true
+    }
+  }
+]

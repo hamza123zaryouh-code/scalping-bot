@@ -16,7 +16,7 @@ from starlette.websockets import WebSocketState
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from autonomous_xauusd.memory_layer import MemoryLayer
-from backend.api.routes import analytics, auth, backtest, dashboard, reports, risk, signals
+from backend.api.routes import analytics, auth, backtest, dashboard, memory, optimizer, reports, risk, signals, trading
 from backend.core.config import Settings, get_settings
 from backend.core.logging import setup_logging
 from backend.core.security import decode_access_token
@@ -40,8 +40,7 @@ async def lifespan(app: FastAPI):
         _bootstrap_autonomous_database(settings)
         logger.info("Autonomous database schema initialized successfully.")
     except Exception as exc:
-        logger.error("Failed to initialize autonomous database: %s", exc)
-        raise RuntimeError(f"Autonomous database bootstrap failed: {exc}") from exc
+        logger.warning("Autonomous database unavailable (offline mode): %s", exc)
 
     yield
     logger.info("XAUUSD Trading Platform API shutting down")
@@ -130,6 +129,9 @@ def create_app() -> FastAPI:
     app.include_router(reports.router, prefix=f"{prefix}/reports", tags=["reports"])
     app.include_router(signals.router, prefix=f"{prefix}/signals", tags=["signals"])
     app.include_router(analytics.router, prefix=f"{prefix}/analytics", tags=["analytics"])
+    app.include_router(trading.router, prefix=f"{prefix}/trading", tags=["trading"])
+    app.include_router(memory.router, prefix=f"{prefix}/memory", tags=["memory"])
+    app.include_router(optimizer.router, prefix=f"{prefix}/optimizer", tags=["optimizer"])
 
     @app.websocket("/ws/live")
     async def websocket_live(websocket: WebSocket):
