@@ -1,28 +1,69 @@
 version: "3.9"
 
+# ══════════════════════════════════════════════════════════════════
+# XAUUSD Autonomous Trading Platform — Production Docker Compose
+# ══════════════════════════════════════════════════════════════════
+# Start:  docker compose -f deployment/docker-compose.yml up -d
+# Stop:   docker compose -f deployment/docker-compose.yml down
+# Logs:   docker compose -f deployment/docker-compose.yml logs -f api
+# ══════════════════════════════════════════════════════════════════
+
 services:
-  # ── FastAPI backend ───────────────────────────────────────
+
+  # ── PostgreSQL database ─────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: xauusd_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-xauusd}
+      POSTGRES_USER: ${POSTGRES_USER:-xauusd}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-xauusd} -d ${POSTGRES_DB:-xauusd}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - xauusd_net
+
+  # ── FastAPI backend ─────────────────────────────────────────────
   api:
     build:
       context: ..
       dockerfile: deployment/Dockerfile
     image: xauusd-platform:latest
     container_name: xauusd_api
-    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 2
+    command: >
+      uvicorn backend.main:app
+      --host 0.0.0.0
+      --port 8000
+      --workers 2
+      --loop uvloop
+      --log-level warning
     ports:
       - "8000:8000"
     env_file:
       - ../.env
     environment:
-      - APP_ENV=production
+      APP_ENV: production
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-xauusd}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-xauusd}
     volumes:
-      - ../logs:/app/logs
-      - ../exports:/app/exports
       - ../live_logs:/app/live_logs
-      - ../datasets:/app/datasets
+      - ../memory:/app/memory
+      - ../artifacts:/app/artifacts
+      - ../results:/app/results
+      - ../reports:/app/reports
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/v1/health', timeout=5)"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -30,31 +71,53 @@ services:
     networks:
       - xauusd_net
 
-  # ── Streamlit dashboard ───────────────────────────────────
-  dashboard:
+  # ── Autonomous trading bot ──────────────────────────────────────
+  # NOTE: On Windows with MT5, run the bot natively, not in Docker.
+  # For Linux paper/demo mode only:
+  bot:
     build:
       context: ..
       dockerfile: deployment/Dockerfile
     image: xauusd-platform:latest
-    container_name: xauusd_dashboard
-    command: streamlit run frontend/app.py --server.port 8501 --server.headless true --server.address 0.0.0.0
-    ports:
-      - "8501:8501"
+    container_name: xauusd_bot
+    command: python scripts/run_live_bot.py --mode paper
     env_file:
       - ../.env
     environment:
-      - APP_ENV=production
+      APP_ENV: production
+      AUTONOMOUS_MODE: ${AUTONOMOUS_MODE:-paper}
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-xauusd}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-xauusd}
     volumes:
-      - ../logs:/app/logs
-      - ../exports:/app/exports
+      - ../live_logs:/app/live_logs
+      - ../memory:/app/memory
+      - ../artifacts:/app/artifacts
     depends_on:
       api:
         condition: service_healthy
     restart: unless-stopped
+    profiles:
+      - bot   # Start only with: docker compose --profile bot up
     networks:
       - xauusd_net
 
-  # ── Nginx reverse proxy ───────────────────────────────────
+  # ── Next.js frontend ────────────────────────────────────────────
+  webapp:
+    build:
+      context: ../webapp
+      dockerfile: ../deployment/Dockerfile.webapp
+    container_name: xauusd_webapp
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      NODE_ENV: production
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - xauusd_net
+
+  # ── Nginx reverse proxy ─────────────────────────────────────────
   nginx:
     image: nginx:1.27-alpine
     container_name: xauusd_nginx
@@ -63,15 +126,15 @@ services:
       - "443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ../logs/nginx:/var/log/nginx
+      - nginx_logs:/var/log/nginx
     depends_on:
       - api
-      - dashboard
+      - webapp
     restart: unless-stopped
     networks:
       - xauusd_net
 
-  # ── Watchdog / monitoring ─────────────────────────────────
+  # ── Watchdog monitoring ─────────────────────────────────────────
   watchdog:
     build:
       context: ..
@@ -81,8 +144,10 @@ services:
     command: python monitoring/watchdog.py
     env_file:
       - ../.env
+    environment:
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-xauusd}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-xauusd}
     volumes:
-      - ../logs:/app/logs
+      - ../live_logs:/app/live_logs
     depends_on:
       - api
     restart: unless-stopped
@@ -94,5 +159,5 @@ networks:
     driver: bridge
 
 volumes:
-  logs:
-  exports:
+  postgres_data:
+  nginx_logs:

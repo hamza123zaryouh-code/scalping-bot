@@ -76,7 +76,24 @@ export const api = {
   analyticsML: () => request<{ data: import("./types").ModelSnapshot[] }>("/api/v1/analytics/ml"),
 
   // Backtest
-  backtestResults: () => request<{ data: unknown }>("/api/v1/backtest/results"),
+  runBacktest: (payload: {
+    start_date: string;
+    end_date: string;
+    starting_capital: number;
+    risk_per_trade?: number;
+    sl_atr_multiplier?: number;
+    tp_atr_multiplier?: number;
+    max_open_trades?: number;
+    commission?: number;
+    spread_cost?: number;
+    symbol?: string;
+    strategy_params?: Record<string, unknown>;
+  }) => request<{ data: import("./types").BacktestRunResult }>("/api/v1/backtest/run", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+  latestBacktest: () => request<{ data: import("./types").BacktestRunResult }>("/api/v1/backtest/latest"),
+  backtestHistory: () => request<{ data: import("./types").BacktestHistoryItem[] }>("/api/v1/backtest/history"),
 
   // Memory
   patterns: () => request<{ data: { winning_patterns: unknown; losing_patterns: unknown; best_parameters: unknown } }>("/api/v1/memory/patterns"),
@@ -87,7 +104,7 @@ export const api = {
 
   // Optimizer
   bestParameters: () => request<{ data: unknown }>("/api/v1/optimizer/best-parameters"),
-  optimizationHistory: () => request<{ data: { runs: import("./types").BacktestResult[]; total: number } }>("/api/v1/optimizer/history"),
+  optimizationHistory: () => request<{ data: { runs: import("./types").BacktestHistoryItem[]; total: number } }>("/api/v1/optimizer/history"),
   performanceRanking: () => request<{ data: { ranking: import("./types").SignalTypeRanking[] } }>("/api/v1/optimizer/performance-ranking"),
   sessionAnalysis: () => request<{ data: { sessions: import("./types").SessionPerformance[] } }>("/api/v1/optimizer/session-analysis"),
 

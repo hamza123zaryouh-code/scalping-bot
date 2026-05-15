@@ -77,6 +77,9 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    telegram_owner_user_id: str = ""
+    telegram_control_api_key: str = ""
+    telegram_backend_base_url: str = "http://127.0.0.1:8000"
 
     ftmo_max_daily_loss: float = 8000.0
     ftmo_max_total_loss: float = 16000.0
@@ -161,6 +164,14 @@ class Settings(BaseSettings):
     @property
     def telegram_ready(self) -> bool:
         return bool(self.telegram_bot_token and self.telegram_chat_id)
+
+    @property
+    def telegram_api_key(self) -> str:
+        return (
+            self.telegram_control_api_key.strip()
+            or (self.api_key or "").strip()
+            or (self.secret_key or "").strip()
+        )
 
     @property
     def mt5_ready(self) -> bool:

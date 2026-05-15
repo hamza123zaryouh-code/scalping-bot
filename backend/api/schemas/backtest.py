@@ -18,6 +18,11 @@ class BacktestRequest(BaseModel):
     commission: float = Field(0.35, ge=0)
     spread_cost: float = Field(0.25, ge=0)
     symbol: str = Field("XAUUSD", pattern=r"^[A-Z]{3,10}$")
+    strategy_params: dict | None = Field(
+        None,
+        description="Optionele V16 strategy parameters (risk_a, adx_min, tp1_r, etc.)",
+        examples=[{"risk_a": 0.004, "adx_min": 14, "cooldown_h": 2}],
+    )
 
     @field_validator("end_date")
     @classmethod
@@ -55,10 +60,22 @@ class BacktestMetrics(BaseModel):
     challenge_days: int
 
 
+class WeeklySummary(BaseModel):
+    week: str
+    week_start: str
+    trades: int
+    pnl: float
+    return_pct: float
+    start_equity: float
+    end_equity: float
+    win_rate: float
+
+
 class BacktestResult(BaseModel):
     task_id: str
     metrics: BacktestMetrics
     trades: list[TradeRecord]
     equity_curve: list[dict]
     monthly_summary: list[dict]
+    weekly_summary: list[WeeklySummary]
     chart_path: str | None = None

@@ -1,179 +1,588 @@
-"""Local backtest service powered by the latest exported XAUUSD dataset."""
+"""
+XAUUSD V17 Backtest Service — Volledig Herbouwd
+===============================================
+Gebruikt core.strategy_engine voor backtests — dezelfde logica als live trading.
+
+Features:
+  - Live backtest via yfinance (geen CSV dependentie)
+  - Async queue systeem met progress tracking
+  - WebSocket progress updates
+  - Parameter input API
+  - Backtest history opslag
+  - Downloadbare rapporten
+  - V16 backtest engine (partiële TP, trailing stop, FTMO guardrails)
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
+import asyncio
+import json
+import logging
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, date
 from pathlib import Path
-from uuid import uuid4
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 
-from backend.api.schemas.backtest import BacktestMetrics, BacktestRequest, BacktestResult, TradeRecord
+from backend.api.schemas.backtest import BacktestMetrics, BacktestRequest, BacktestResult, TradeRecord, WeeklySummary
 from backend.api.schemas.common import TaskStatus
+from core.strategy_engine import StrategyEngine, DEFAULT_CFG
 
-EXPORT_ROOT = Path("exports/latest/data")
+logger = logging.getLogger(__name__)
+
+FTMO_STARTING_CAPITAL = 160_000.0
+FTMO_DAG_EUR = 2_000.0
+FTMO_DD_PCT = 0.06
+
+RESULTS_DIR = Path("results/backtests")
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+LATEST_RESULT_PATH = RESULTS_DIR / "latest_backtest.json"
+
+
+@dataclass
+class BacktestProgress:
+    task_id: str
+    status: str = "pending"      # pending | running | completed | failed
+    progress: float = 0.0        # 0.0 - 1.0
+    message: str = ""
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    result: Optional[BacktestResult] = None
+    error: Optional[str] = None
 
 
 @dataclass
 class StoredBacktest:
-    result: BacktestResult
+    task_id: str
+    result: Optional[BacktestResult]
     status: TaskStatus
+    created_at: datetime = field(default_factory=datetime.utcnow)
 
 
 class BacktestService:
+    """
+    V17 Backtest Service — gebruikt strategy_engine voor live backtests.
+
+    Alle backtests gebruiken DEZELFDE logica als de live trading engine,
+    gegarandeerd door de unified core/strategy_engine.py.
+    """
+
     def __init__(self) -> None:
+        self._engine = StrategyEngine()
         self._tasks: dict[str, StoredBacktest] = {}
+        self._progress: dict[str, BacktestProgress] = {}
+        self._history: list[dict] = []
+        self._latest_result: Optional[BacktestResult] = self._load_latest_result()
 
     def run(self, req: BacktestRequest) -> BacktestResult:
-        trades_df = self._load_trades()
-        equity_df = self._load_equity()
+        """
+        Synchrone backtest — haalt data op en runt de V16 engine.
+        Retourneert BacktestResult met volledige metrics.
+        """
+        task_id = uuid.uuid4().hex
 
-        filtered_trades = self._filter_trades(trades_df, req.start_date.isoformat(), req.end_date.isoformat())
-        filtered_equity = self._filter_equity(equity_df, req.start_date.isoformat(), req.end_date.isoformat())
+        try:
+            # Data ophalen
+            logger.info("Backtest gestart: %s - %s", req.start_date, req.end_date)
+            df = self._fetch_data(req.start_date, req.end_date)
 
-        if filtered_trades.empty:
-            raise ValueError("No backtest trades available for the requested date range.")
-
-        baseline_start = float(equity_df["capital"].iloc[0]) if not equity_df.empty else 160000.0
-        capital_scale = req.starting_capital / baseline_start if baseline_start > 0 else 1.0
-
-        scaled_trades = filtered_trades.copy()
-        scaled_trades["pnl"] = scaled_trades["pnl"].astype(float) * capital_scale
-        scaled_trades["cumulative_equity"] = req.starting_capital + scaled_trades["pnl"].cumsum()
-
-        scaled_equity = self._scale_equity(filtered_equity, req.starting_capital, baseline_start)
-        metrics = self._build_metrics(scaled_trades, scaled_equity, req)
-        monthly_summary = self._build_monthly_summary(scaled_trades)
-
-        task_id = uuid4().hex
-        result = BacktestResult(
-            task_id=task_id,
-            metrics=metrics,
-            trades=[
-                TradeRecord(
-                    side=str(row["side"]),
-                    entry_time=pd.Timestamp(row["entry_time"]).isoformat(),
-                    exit_time=pd.Timestamp(row["exit_time"]).isoformat(),
-                    entry_price=float(row["entry_price"]),
-                    exit_price=float(row["exit_price"]),
-                    stop_loss=float(row["stop_loss"]),
-                    take_profit=float(row["take_profit"]),
-                    size=float(row["size"]),
-                    pnl=round(float(row["pnl"]), 2),
-                    cumulative_equity=round(float(row["cumulative_equity"]), 2),
+            if df.empty or len(df) < 200:
+                raise ValueError(
+                    f"Onvoldoende data: {len(df)} bars. "
+                    f"Minimaal 200 H1 bars vereist."
                 )
-                for _, row in scaled_trades.iterrows()
-            ],
-            equity_curve=scaled_equity.to_dict(orient="records"),
-            monthly_summary=monthly_summary,
-            chart_path=str((EXPORT_ROOT.parent / "images" / "ftmo_dashboard_v3.png").as_posix()),
-        )
 
-        self._tasks[task_id] = StoredBacktest(
-            result=result,
-            status=TaskStatus(
+            # Indicatoren berekenen
+            df_feat = self._engine.prepare_features(df)
+
+            # Parameters instellen
+            cfg = self._build_cfg(req)
+
+            # Backtest uitvoeren
+            trades, final_capital = self._run_backtest_engine(df_feat, cfg, req.starting_capital)
+
+            if not trades:
+                raise ValueError("Geen trades gegenereerd in de opgegeven periode.")
+
+            # Metrics berekenen
+            trades_df = pd.DataFrame(trades)
+            metrics = self._build_metrics(trades_df, req.starting_capital, final_capital)
+            monthly_summary = self._build_monthly_summary(trades_df)
+            weekly_summary = self._build_weekly_summary(trades_df, req.starting_capital)
+
+            # TradeRecord objecten
+            trade_records = [
+                TradeRecord(
+                    side="buy" if t["rich"] == 1 else "sell",
+                    entry_time=str(t["in"]),
+                    exit_time=str(t["uit"]),
+                    entry_price=t["entry"],
+                    exit_price=t["exit"],
+                    stop_loss=t.get("sl", 0.0),
+                    take_profit=t.get("tp1", 0.0),
+                    size=t.get("lot_size", 0.01),
+                    pnl=round(float(t["pnl"]), 2),
+                    cumulative_equity=round(float(t.get("cum_equity", req.starting_capital)), 2),
+                )
+                for t in trades
+            ]
+
+            result = BacktestResult(
                 task_id=task_id,
-                status="completed",
-                progress=1.0,
-                result={"total_trades": metrics.total_trades, "total_return_pct": metrics.total_return_pct},
-                started_at=datetime.utcnow(),
-                finished_at=datetime.utcnow(),
-            ),
+                metrics=metrics,
+                trades=trade_records,
+                equity_curve=self._build_equity_curve(trades_df, req.starting_capital),
+                monthly_summary=monthly_summary,
+                weekly_summary=weekly_summary,
+                chart_path="",
+            )
+            self._latest_result = result
+            self._persist_result(result)
+
+            # ML memory bridge — backtest trades voeden pattern memory + feedback engine
+            self._feed_ml_memory(trades, df_feat)
+
+            # Opslaan in memory
+            self._tasks[task_id] = StoredBacktest(
+                task_id=task_id,
+                result=result,
+                status=TaskStatus(
+                    task_id=task_id,
+                    status="completed",
+                    progress=1.0,
+                    result={
+                        "total_trades": metrics.total_trades,
+                        "total_return_pct": metrics.total_return_pct,
+                        "win_rate": metrics.win_rate,
+                        "profit_factor": metrics.profit_factor,
+                        "max_drawdown_pct": metrics.max_drawdown_pct,
+                    },
+                    started_at=datetime.utcnow(),
+                    finished_at=datetime.utcnow(),
+                ),
+            )
+
+            # History opslaan
+            self._history.append({
+                "task_id": task_id,
+                "start_date": str(req.start_date),
+                "end_date": str(req.end_date),
+                "starting_capital": req.starting_capital,
+                "total_trades": metrics.total_trades,
+                "win_rate": metrics.win_rate,
+                "profit_factor": metrics.profit_factor,
+                "total_return_pct": metrics.total_return_pct,
+                "max_drawdown_pct": metrics.max_drawdown_pct,
+                "created_at": datetime.utcnow().isoformat(),
+            })
+
+            logger.info(
+                "Backtest voltooid: %d trades, WR=%.1f%%, PF=%.2f, DD=%.1f%%",
+                metrics.total_trades, metrics.win_rate * 100,
+                metrics.profit_factor, metrics.max_drawdown_pct,
+            )
+
+            return result
+
+        except FileNotFoundError:
+            raise
+        except Exception as e:
+            logger.exception("Backtest mislukt: %s", e)
+            raise ValueError(f"Backtest fout: {str(e)}") from e
+
+    async def run_async(self, req: BacktestRequest) -> str:
+        """
+        Async backtest — retourneert task_id onmiddellijk.
+        Progress is op te vragen via status(task_id).
+        """
+        task_id = uuid.uuid4().hex
+        prog = BacktestProgress(
+            task_id=task_id,
+            status="pending",
+            started_at=datetime.utcnow(),
         )
-        return result
+        self._progress[task_id] = prog
 
-    def status(self, task_id: str) -> TaskStatus | None:
+        # Start in background
+        asyncio.create_task(self._run_async_task(task_id, req, prog))
+        return task_id
+
+    async def _run_async_task(
+        self,
+        task_id: str,
+        req: BacktestRequest,
+        prog: BacktestProgress,
+    ) -> None:
+        prog.status = "running"
+        prog.progress = 0.05
+        prog.message = "Data ophalen..."
+
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, lambda: self.run(req))
+            prog.result = result
+            prog.status = "completed"
+            prog.progress = 1.0
+            prog.message = f"Voltooid: {result.metrics.total_trades} trades"
+            prog.finished_at = datetime.utcnow()
+        except Exception as e:
+            prog.status = "failed"
+            prog.error = str(e)
+            prog.message = f"Fout: {e}"
+            prog.finished_at = datetime.utcnow()
+            logger.error("Async backtest mislukt [%s]: %s", task_id, e)
+
+    def status(self, task_id: str) -> Optional[TaskStatus]:
         stored = self._tasks.get(task_id)
-        return stored.status if stored else None
+        if stored:
+            return stored.status
 
-    def result(self, task_id: str) -> BacktestResult | None:
+        prog = self._progress.get(task_id)
+        if prog:
+            return TaskStatus(
+                task_id=task_id,
+                status=prog.status,
+                progress=prog.progress,
+                result={"message": prog.message},
+                started_at=prog.started_at,
+                finished_at=prog.finished_at,
+            )
+        return None
+
+    def result(self, task_id: str) -> Optional[BacktestResult]:
         stored = self._tasks.get(task_id)
-        return stored.result if stored else None
+        if stored:
+            return stored.result
 
-    def _load_trades(self) -> pd.DataFrame:
-        path = EXPORT_ROOT / "trades.csv"
-        if not path.exists():
-            raise FileNotFoundError(f"Backtest dataset missing: {path}")
-        trades = pd.read_csv(path, parse_dates=["entry_time", "exit_time", "entry_date"])
-        return trades.sort_values("entry_time").reset_index(drop=True)
+        prog = self._progress.get(task_id)
+        if prog and prog.result:
+            return prog.result
+        return None
 
-    def _load_equity(self) -> pd.DataFrame:
-        path = EXPORT_ROOT / "equity.csv"
-        if not path.exists():
-            raise FileNotFoundError(f"Backtest dataset missing: {path}")
-        equity = pd.read_csv(path, parse_dates=["timestamp"])
-        return equity.sort_values("timestamp").reset_index(drop=True)
+    def get_history(self) -> list[dict]:
+        return list(reversed(self._history[-50:]))  # Laatste 50
 
-    def _filter_trades(self, trades: pd.DataFrame, start_date: str, end_date: str) -> pd.DataFrame:
-        start = pd.Timestamp(start_date)
-        end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
-        mask = trades["entry_time"].between(start, end)
-        return trades.loc[mask].copy().reset_index(drop=True)
+    def get_latest_result(self) -> Optional[BacktestResult]:
+        if self._latest_result is not None:
+            return self._latest_result
+        self._latest_result = self._load_latest_result()
+        return self._latest_result
 
-    def _filter_equity(self, equity: pd.DataFrame, start_date: str, end_date: str) -> pd.DataFrame:
-        start = pd.Timestamp(start_date)
-        end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
-        mask = equity["timestamp"].between(start, end)
-        filtered = equity.loc[mask].copy().reset_index(drop=True)
-        if filtered.empty:
-            return equity.head(1).copy()
-        return filtered
+    def get_progress(self, task_id: str) -> Optional[dict]:
+        prog = self._progress.get(task_id)
+        if prog:
+            return {
+                "task_id": prog.task_id,
+                "status": prog.status,
+                "progress": prog.progress,
+                "message": prog.message,
+                "error": prog.error,
+            }
+        return None
 
-    def _scale_equity(self, equity: pd.DataFrame, starting_capital: float, baseline_start: float) -> pd.DataFrame:
-        capital_scale = starting_capital / baseline_start if baseline_start > 0 else 1.0
-        base = equity.copy()
-        for column in ("capital", "equity", "daily_floor", "ftmo_overall_floor", "daily_buffer", "overall_buffer", "daily_realized_pnl", "weekly_realized_pnl", "monthly_realized_pnl"):
-            if column in base.columns:
-                base[column] = (base[column].astype(float) - baseline_start) * capital_scale + starting_capital
+    # ─────────────────────────────────────────────────────────────
+    # DATA OPHALEN
+    # ─────────────────────────────────────────────────────────────
 
-        if "daily_floor" in base.columns:
-            base["daily_floor"] = (equity["daily_floor"].astype(float) - baseline_start) * capital_scale + starting_capital
-        if "ftmo_overall_floor" in base.columns:
-            base["ftmo_overall_floor"] = (equity["ftmo_overall_floor"].astype(float) - baseline_start) * capital_scale + starting_capital
-        if "daily_buffer" in base.columns:
-            base["daily_buffer"] = equity["daily_buffer"].astype(float) * capital_scale
-        if "overall_buffer" in base.columns:
-            base["overall_buffer"] = equity["overall_buffer"].astype(float) * capital_scale
-        if "daily_realized_pnl" in base.columns:
-            base["daily_realized_pnl"] = equity["daily_realized_pnl"].astype(float) * capital_scale
-        if "weekly_realized_pnl" in base.columns:
-            base["weekly_realized_pnl"] = equity["weekly_realized_pnl"].astype(float) * capital_scale
-        if "monthly_realized_pnl" in base.columns:
-            base["monthly_realized_pnl"] = equity["monthly_realized_pnl"].astype(float) * capital_scale
+    def _fetch_data(self, start_date, end_date) -> pd.DataFrame:
+        """Haalt H1 XAUUSD data op via yfinance (GC=F)."""
+        try:
+            import yfinance as yf
+        except ImportError:
+            raise FileNotFoundError("yfinance niet beschikbaar — pip install yfinance")
 
-        base["timestamp"] = pd.to_datetime(base["timestamp"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
+        # Extra buffer voor indicator warmup
+        start_with_buffer = pd.Timestamp(start_date) - pd.Timedelta(days=90)
+        end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1)
+
+        try:
+            df = yf.download(
+                "GC=F",
+                start=start_with_buffer.strftime("%Y-%m-%d"),
+                end=end_ts.strftime("%Y-%m-%d"),
+                interval="1h",
+                progress=False,
+                auto_adjust=True,
+            )
+        except Exception as e:
+            raise FileNotFoundError(f"Data ophalen mislukt: {e}") from e
+
+        if df.empty:
+            raise FileNotFoundError(
+                "Geen data beschikbaar voor GC=F (Gold Futures). "
+                "Controleer internetverbinding."
+            )
+
+        df.columns = [c[0].lower() if isinstance(c, tuple) else c.lower() for c in df.columns]
+        df.index = pd.to_datetime(df.index, utc=True)
+        df = df[["open", "high", "low", "close", "volume"]].dropna()
+
+        logger.info("Data geladen: %d H1 bars (%s → %s)", len(df), df.index[0].date(), df.index[-1].date())
+        return df
+
+    # ─────────────────────────────────────────────────────────────
+    # BACKTEST ENGINE (V16 logica — identiek aan strategy_v16.py)
+    # ─────────────────────────────────────────────────────────────
+
+    def _build_cfg(self, req: BacktestRequest) -> dict:
+        """Bouw strategie config vanuit BacktestRequest."""
+        base = dict(DEFAULT_CFG)
+
+        # Override met request parameters indien opgegeven
+        params = getattr(req, "strategy_params", None) or {}
+        if isinstance(params, dict):
+            for key in DEFAULT_CFG:
+                if key in params:
+                    base[key] = params[key]
+
         return base
 
-    def _build_metrics(self, trades: pd.DataFrame, equity: pd.DataFrame, req: BacktestRequest) -> BacktestMetrics:
+    def _run_backtest_engine(
+        self,
+        df: pd.DataFrame,
+        cfg: dict,
+        starting_capital: float,
+    ) -> tuple[list[dict], float]:
+        """
+        V16 backtest engine — exact dezelfde logica als strategy_v16.py.
+        Gebruikt core.strategy_engine.generate_signal() voor signalen.
+        """
+        tp1_pct = cfg.get("tp1_pct", 0.30)
+        tp2_pct = cfg.get("tp2_pct", 0.30)
+        tp3_pct = 1.0 - tp1_pct - tp2_pct
+        max_dag = cfg.get("max_dag", 6)
+        sl_dag_max = cfg.get("sl_dag_max", 2)
+        cool_h = cfg.get("cooldown_h", 2)
+        trail_on = cfg.get("trailing", True)
+        ftmo_dag_eur = starting_capital * 0.0125  # 1.25% per dag
+        ftmo_tot_eur = starting_capital * FTMO_DD_PCT
+
+        kap = float(starting_capital)
+        piek = kap
+        trs: list[dict] = []
+        dag: dict[date, dict] = {}
+
+        ip = False
+        entry = sl = tp1 = tp2 = tp3 = None
+        richting = sig_type = ot = None
+        risk_rem = 0.0
+        tp1_hit = tp2_hit = False
+        last_i = -999
+        cum_equity = kap
+
+        for i in range(120, len(df)):
+            b = df.iloc[i]
+            bar_date = b.name.date()
+            uur = b.name.hour
+            dow = b.name.weekday()
+
+            if bar_date not in dag:
+                dag[bar_date] = {"loss": 0.0, "n": 0, "sl": 0}
+
+            dd_eur = piek - kap
+            if dd_eur >= ftmo_tot_eur:
+                if ip:
+                    ep = float(b["close"])
+                    pnl = richting * (ep - entry) / max(abs(entry - sl), 0.001) * risk_rem
+                    kap += pnl
+                    cum_equity = kap
+                    trs.append(self._make_tr(ot, b.name, richting, entry, ep, pnl, "FAIL", sig_type, sl, tp1, cum_equity))
+                    ip = False
+                break
+
+            # Beheer open positie
+            if ip:
+                hi = float(b["high"])
+                lo = float(b["low"])
+                cl = float(b["close"])
+                sl_dist = abs(entry - sl)
+                if sl_dist <= 0:
+                    ip = False
+                    continue
+
+                # Break-even na TP1
+                if tp1_hit and not tp2_hit:
+                    if richting == 1 and sl < entry:
+                        sl = entry + 0.05 * sl_dist
+                    elif richting == -1 and sl > entry:
+                        sl = entry - 0.05 * sl_dist
+
+                # Trailing stop na TP1
+                if trail_on and tp1_hit:
+                    float_pnl = richting * (cl - entry) / sl_dist * risk_rem
+                    if float_pnl > 500 and not tp2_hit:
+                        new_sl_trail = entry + richting * 0.4 * sl_dist
+                        if richting == 1:
+                            sl = max(sl, new_sl_trail)
+                        else:
+                            sl = min(sl, new_sl_trail)
+
+                # TP1
+                if not tp1_hit:
+                    if ((richting == 1 and hi >= tp1) or (richting == -1 and lo <= tp1)):
+                        if not ((richting == 1 and lo <= sl) or (richting == -1 and hi >= sl)):
+                            pnl_tp1 = tp1_pct * risk_rem * ((tp1 - entry) / sl_dist * richting)
+                            kap += pnl_tp1
+                            if kap > piek: piek = kap
+                            cum_equity = kap
+                            trs.append(self._make_tr(ot, b.name, richting, entry, tp1, pnl_tp1, "TP1", sig_type, sl, tp1, cum_equity))
+                            risk_rem *= (1.0 - tp1_pct)
+                            tp1_hit = True
+
+                # TP2
+                if tp1_hit and not tp2_hit:
+                    tp2_frac = tp2_pct / (tp2_pct + tp3_pct)
+                    if (richting == 1 and hi >= tp2) or (richting == -1 and lo <= tp2):
+                        pnl_tp2 = tp2_frac * risk_rem * ((tp2 - entry) / sl_dist * richting)
+                        kap += pnl_tp2
+                        if kap > piek: piek = kap
+                        cum_equity = kap
+                        trs.append(self._make_tr(ot, b.name, richting, entry, tp2, pnl_tp2, "TP2", sig_type, sl, tp2, cum_equity))
+                        risk_rem *= (1.0 - tp2_frac)
+                        tp2_hit = True
+
+                # TP3
+                if tp1_hit and tp2_hit:
+                    if (richting == 1 and hi >= tp3) or (richting == -1 and lo <= tp3):
+                        pnl_tp3 = risk_rem * ((tp3 - entry) / sl_dist * richting)
+                        kap += pnl_tp3
+                        if kap > piek: piek = kap
+                        cum_equity = kap
+                        trs.append(self._make_tr(ot, b.name, richting, entry, tp3, pnl_tp3, "TP3", sig_type, sl, tp3, cum_equity))
+                        ip = False
+                        continue
+
+                # SL check
+                hit_sl = (richting == 1 and lo <= sl) or (richting == -1 and hi >= sl)
+                if hit_sl:
+                    pnl_sl = risk_rem * ((sl - entry) / sl_dist * richting)
+                    if pnl_sl < 0:
+                        rem_loss = max(0, ftmo_dag_eur - dag[bar_date]["loss"])
+                        if abs(pnl_sl) > rem_loss:
+                            pnl_sl = -rem_loss
+                        dag[bar_date]["loss"] += abs(pnl_sl)
+                        dag[bar_date]["sl"] += 1
+                    kap += pnl_sl
+                    if kap > piek: piek = kap
+                    cum_equity = kap
+                    trs.append(self._make_tr(ot, b.name, richting, entry, sl, pnl_sl, "SL", sig_type, sl, tp1, cum_equity))
+                    ip = False
+
+            if ip:
+                continue
+
+            # Entry condities
+            if dag[bar_date]["loss"] >= ftmo_dag_eur * 0.65: continue
+            if dag[bar_date]["n"] >= max_dag: continue
+            if dag[bar_date]["sl"] >= sl_dag_max: continue
+            if (i - last_i) < cool_h: continue
+
+            # Sessie check
+            tier = self._engine.get_session(b.name.to_pydatetime())
+            if tier == "blocked": continue
+
+            # Signaal genereren via UNIFIED STRATEGY ENGINE
+            signal = self._engine.generate_signal(df.iloc[max(0, i - 300):i + 1], cfg=cfg)
+            if signal is None: continue
+
+            sig_type = signal.signal_type
+            rich_str = signal.direction
+            risk_pct = signal.risk_pct
+
+            # Standaard sessie: alleen A of B signalen
+            if tier == "standard" and sig_type not in ("A_EMACROSS", "B_MACDCROSS"):
+                continue
+
+            # Drawdown risk scaling
+            dd_pct = (piek - kap) / max(piek, 1)
+            if dd_pct > 0.05:     risk_pct *= 0.25
+            elif dd_pct > 0.04:   risk_pct *= 0.40
+            elif dd_pct > 0.03:   risk_pct *= 0.60
+            elif dd_pct > 0.01:   risk_pct *= 0.80
+
+            # Loss streak scaling
+            recent_sl = sum(1 for t in trs[-4:] if t["result"] == "SL" and t["pnl"] < 0)
+            if recent_sl >= 3: risk_pct *= 0.50
+
+            richting = 1 if rich_str == "long" else -1
+            cl_pr = float(b["close"])
+
+            # SL/TP niveaus uit signal
+            sl = signal.stop_loss
+            tp1 = signal.take_profit_1
+            tp2 = signal.take_profit_2
+            tp3 = signal.take_profit_3
+
+            sl_dist = abs(cl_pr - sl)
+            if sl_dist <= 0: continue
+
+            risk_usd = kap * risk_pct
+            risk_rem = risk_usd
+            entry = cl_pr
+            ot = b.name
+            ip = True
+            tp1_hit = tp2_hit = False
+            last_i = i
+            dag[bar_date]["n"] += 1
+
+        # Sluit open positie
+        if ip and len(df) > 0:
+            ep = float(df.iloc[-1]["close"])
+            sl_dist = abs(entry - sl)
+            pnl = risk_rem * ((ep - entry) / max(sl_dist, 0.001) * richting)
+            kap += pnl
+            cum_equity = kap
+            trs.append(self._make_tr(ot, df.index[-1], richting, entry, ep, pnl, "OPEN", sig_type, sl, tp1, cum_equity))
+
+        return trs, kap
+
+    @staticmethod
+    def _make_tr(ti, to, rich, entry, exit_p, pnl, result, stype, sl=0, tp1=0, cum_equity=0) -> dict:
+        return {
+            "in": str(ti), "uit": str(to), "rich": rich,
+            "entry": round(float(entry), 2), "exit": round(float(exit_p), 2),
+            "sl": round(float(sl), 2), "tp1": round(float(tp1), 2),
+            "pnl": round(float(pnl), 2), "result": result, "type": stype,
+            "cum_equity": round(float(cum_equity), 2),
+            "lot_size": 0.01,
+        }
+
+    # ─────────────────────────────────────────────────────────────
+    # METRICS & RAPPORTEN
+    # ─────────────────────────────────────────────────────────────
+
+    def _build_metrics(self, trades: pd.DataFrame, starting: float, final: float) -> BacktestMetrics:
         pnl = trades["pnl"].astype(float)
         wins = pnl[pnl > 0]
         losses = pnl[pnl < 0]
-        final_equity = float(trades["cumulative_equity"].iloc[-1]) if not trades.empty else req.starting_capital
-        total_return_pct = ((final_equity / req.starting_capital) - 1.0) * 100 if req.starting_capital > 0 else 0.0
 
-        equity_curve = trades["cumulative_equity"].astype(float)
-        running_peak = equity_curve.cummax()
-        drawdown_pct = np.where(running_peak > 0, (running_peak - equity_curve) / running_peak * 100, 0.0)
-        max_drawdown_pct = float(np.max(drawdown_pct)) if len(drawdown_pct) else 0.0
+        total_return_pct = ((final / starting) - 1.0) * 100 if starting > 0 else 0.0
 
-        trade_returns = pnl / req.starting_capital if req.starting_capital > 0 else pnl * 0
-        sharpe_ratio = 0.0
-        if len(trade_returns) > 1 and float(trade_returns.std(ddof=0)) > 0:
-            sharpe_ratio = float(trade_returns.mean() / trade_returns.std(ddof=0) * np.sqrt(len(trade_returns)))
+        cum_equity = pnl.cumsum() + starting
+        running_peak = cum_equity.cummax()
+        dd_series = np.where(running_peak > 0, (running_peak - cum_equity) / running_peak * 100, 0.0)
+        max_drawdown_pct = float(np.max(dd_series)) if len(dd_series) else 0.0
 
         profit_factor = float(wins.sum() / losses.abs().sum()) if not losses.empty and losses.abs().sum() > 0 else 99.0
         avg_win = float(wins.mean()) if not wins.empty else 0.0
         avg_loss = float(losses.mean()) if not losses.empty else 0.0
         expectancy = float(pnl.mean()) if not pnl.empty else 0.0
-        calmar_ratio = float(total_return_pct / max_drawdown_pct) if max_drawdown_pct > 0 else 0.0
-        challenge_days = int(trades["entry_time"].dt.normalize().nunique())
 
-        ftmo_passed = True
-        if "ftmo_status" in equity.columns:
-            ftmo_passed = not equity["ftmo_status"].astype(str).str.upper().eq("FAIL").any()
-        elif "daily_buffer" in equity.columns and "overall_buffer" in equity.columns:
-            ftmo_passed = bool((equity["daily_buffer"].astype(float) >= 0).all() and (equity["overall_buffer"].astype(float) >= 0).all())
+        trade_returns = pnl / starting if starting > 0 else pnl * 0
+        sharpe_ratio = 0.0
+        if len(trade_returns) > 1 and float(trade_returns.std(ddof=0)) > 0:
+            sharpe_ratio = float(trade_returns.mean() / trade_returns.std(ddof=0) * np.sqrt(252))
+
+        calmar_ratio = float(total_return_pct / max_drawdown_pct) if max_drawdown_pct > 0 else 0.0
+
+        if "in" in trades.columns:
+            challenge_days = int(pd.to_datetime(trades["in"]).dt.normalize().nunique())
+        else:
+            challenge_days = 0
+
+        ftmo_passed = max_drawdown_pct < FTMO_DD_PCT * 100
 
         return BacktestMetrics(
             total_trades=int(len(trades)),
@@ -191,16 +600,16 @@ class BacktestService:
         )
 
     def _build_monthly_summary(self, trades: pd.DataFrame) -> list[dict]:
-        if trades.empty:
+        if trades.empty or "in" not in trades.columns:
             return []
         monthly = trades.copy()
-        monthly["month"] = monthly["entry_time"].dt.to_period("M").astype(str)
+        monthly["month"] = pd.to_datetime(monthly["in"]).dt.to_period("M").astype(str)
         grouped = (
             monthly.groupby("month")
             .agg(
                 trades=("pnl", "size"),
                 pnl=("pnl", "sum"),
-                win_rate=("pnl", lambda series: float((series > 0).mean()) if len(series) else 0.0),
+                win_rate=("pnl", lambda s: float((s > 0).mean()) if len(s) else 0.0),
                 avg_trade=("pnl", "mean"),
             )
             .reset_index()
@@ -215,3 +624,187 @@ class BacktestService:
             }
             for _, row in grouped.iterrows()
         ]
+
+    def _build_weekly_summary(self, trades: pd.DataFrame, starting: float) -> list[WeeklySummary]:
+        if trades.empty or "uit" not in trades.columns or "pnl" not in trades.columns:
+            return []
+
+        weekly = trades.copy()
+        weekly["closed_at"] = pd.to_datetime(weekly["uit"], utc=True, errors="coerce")
+        weekly = weekly.dropna(subset=["closed_at"]).sort_values("closed_at").reset_index(drop=True)
+        if weekly.empty:
+            return []
+
+        weekly["pnl"] = weekly["pnl"].astype(float)
+        weekly["equity_before"] = starting + weekly["pnl"].cumsum().shift(fill_value=0.0)
+        weekly["equity_after"] = starting + weekly["pnl"].cumsum()
+        iso = weekly["closed_at"].dt.isocalendar()
+        weekly["week"] = iso.year.astype(str) + "-W" + iso.week.astype(str).str.zfill(2)
+        weekly["week_start"] = (
+            weekly["closed_at"].dt.normalize() - pd.to_timedelta(weekly["closed_at"].dt.weekday, unit="D")
+        )
+
+        grouped = (
+            weekly.groupby(["week", "week_start"], as_index=False)
+            .agg(
+                trades=("pnl", "size"),
+                pnl=("pnl", "sum"),
+                start_equity=("equity_before", "first"),
+                end_equity=("equity_after", "last"),
+                win_rate=("pnl", lambda s: float((s > 0).mean()) if len(s) else 0.0),
+            )
+            .sort_values("week_start")
+        )
+        grouped["return_pct"] = np.where(
+            grouped["start_equity"] > 0,
+            grouped["pnl"] / grouped["start_equity"] * 100.0,
+            0.0,
+        )
+
+        return [
+            WeeklySummary(
+                week=str(row["week"]),
+                week_start=pd.Timestamp(row["week_start"]).date().isoformat(),
+                trades=int(row["trades"]),
+                pnl=round(float(row["pnl"]), 2),
+                return_pct=round(float(row["return_pct"]), 2),
+                start_equity=round(float(row["start_equity"]), 2),
+                end_equity=round(float(row["end_equity"]), 2),
+                win_rate=round(float(row["win_rate"]), 4),
+            )
+            for _, row in grouped.iterrows()
+        ]
+
+    def _build_equity_curve(self, trades: pd.DataFrame, starting: float) -> list[dict]:
+        if trades.empty:
+            return []
+        result = []
+        equity = starting
+        for _, row in trades.iterrows():
+            equity += float(row.get("pnl", 0))
+            result.append({
+                "timestamp": str(row.get("uit", "")),
+                "capital": round(equity, 2),
+                "pnl": round(float(row.get("pnl", 0)), 2),
+            })
+        return result
+
+    def _feed_ml_memory(self, trades: list[dict], df_feat: pd.DataFrame) -> None:
+        """
+        Voert backtest trades in de ML memory systemen:
+          - PatternMemory: patroonstatistieken per setup type
+          - FeedbackEngine: feature records voor model training
+
+        Alle trades worden gemarkeerd als source='backtest' zodat
+        het live model ze kan onderscheiden van echte trades.
+        """
+        try:
+            from ml.pattern_memory import PatternMemory
+            from ml.feedback_engine import FeedbackEngine, TradeFeatureRecord
+        except ImportError:
+            logger.debug("ML modules niet beschikbaar — backtest bridge overgeslagen")
+            return
+
+        if not trades:
+            return
+
+        pattern_mem = PatternMemory()
+        feedback_eng = FeedbackEngine()
+
+        recorded = 0
+        for t in trades:
+            try:
+                signal_type = str(t.get("type", "D_PULLBACK"))
+                direction = "long" if t.get("rich", 1) == 1 else "short"
+                pnl = float(t.get("pnl", 0.0))
+
+                # Tsd ophalen uit de feature dataframe op entry tijdstip
+                in_time = pd.to_datetime(t.get("in"))
+                out_time = pd.to_datetime(t.get("uit"))
+                holding_min = max(0.0, (out_time - in_time).total_seconds() / 60.0) if pd.notna(out_time) else 60.0
+
+                # Features ophalen van de bar op entry tijdstip
+                feat_row = None
+                if in_time in df_feat.index:
+                    feat_row = df_feat.loc[in_time]
+                elif not df_feat.empty:
+                    # Dichtste bar vinden
+                    idx = df_feat.index.searchsorted(in_time)
+                    if idx < len(df_feat):
+                        feat_row = df_feat.iloc[idx]
+
+                rsi14 = float(feat_row["rsi14"]) if feat_row is not None and "rsi14" in feat_row else 50.0
+                adx14 = float(feat_row["adx14"]) if feat_row is not None and "adx14" in feat_row else 14.0
+                h4_regime = str(feat_row.get("h4_regime", "CHOPPY")) if feat_row is not None else "CHOPPY"
+                d1_trend = str(feat_row.get("d1_trend", "neutral")) if feat_row is not None else "neutral"
+                atr14 = float(feat_row["atr14"]) if feat_row is not None and "atr14" in feat_row else 5.0
+                hour = in_time.hour if hasattr(in_time, "hour") else 10
+                session = "london" if 7 <= hour < 12 else ("ny" if 13 <= hour <= 17 else "any")
+
+                entry_price = float(t.get("entry", 1))
+                sl_price = float(t.get("sl", entry_price))
+                sl_dist = abs(entry_price - sl_price)
+                rr = abs(pnl) / (sl_dist * 100) if sl_dist > 0 else 1.0
+
+                # PatternMemory
+                pattern_mem.record(
+                    signal_type=signal_type,
+                    direction=direction,
+                    h4_regime=h4_regime,
+                    d1_trend=d1_trend,
+                    rsi14=rsi14,
+                    session=session,
+                    pnl=pnl,
+                    rr=rr,
+                    holding_minutes=holding_min,
+                )
+
+                # FeedbackEngine
+                rec = TradeFeatureRecord(
+                    broker_ticket=f"BT_{t.get('in', '')}_{signal_type}",
+                    signal_type=signal_type,
+                    direction=direction,
+                    rsi14=rsi14,
+                    adx14=adx14,
+                    macd_hist=0.0,
+                    h4_adx=adx14,
+                    h4_regime=h4_regime,
+                    d1_trend=d1_trend,
+                    dist21=float(feat_row.get("dist21", 0.0)) if feat_row is not None else 0.0,
+                    atr14=atr14,
+                    volatility_ratio=1.0,
+                    hour_of_day=hour,
+                    day_of_week=in_time.weekday() if hasattr(in_time, "weekday") else 0,
+                    sentiment_score=0.0,
+                    pnl=pnl,
+                    rr_ratio=rr,
+                    market_regime=h4_regime,
+                    holding_minutes=holding_min,
+                    source="backtest",
+                )
+                feedback_eng.record_trade(rec)
+                recorded += 1
+
+            except Exception as exc:
+                logger.debug("ML bridge: trade overgeslagen: %s", exc)
+                continue
+
+        logger.info("ML memory bridge: %d/%d trades ingevoerd vanuit backtest", recorded, len(trades))
+
+        # Model hertrainen als genoeg data
+        if feedback_eng.get_record_count() >= 20:
+            feedback_eng.train()
+
+    def _persist_result(self, result: BacktestResult) -> None:
+        payload = result.model_dump(mode="json")
+        LATEST_RESULT_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _load_latest_result(self) -> Optional[BacktestResult]:
+        if not LATEST_RESULT_PATH.exists():
+            return None
+        try:
+            payload = json.loads(LATEST_RESULT_PATH.read_text(encoding="utf-8"))
+            return BacktestResult.model_validate(payload)
+        except Exception as exc:
+            logger.warning("Could not load persisted latest backtest result: %s", exc)
+            return None

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from risk_manager import (
+from core.risk_manager import (
     FTMOLimits,
     GuardrailDecision,
     build_ftmo_limits,

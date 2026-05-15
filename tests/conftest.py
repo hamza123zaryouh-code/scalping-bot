@@ -48,7 +48,7 @@ def sample_ohlcv() -> pd.DataFrame:
 
 @pytest.fixture
 def ftmo_limits():
-    from risk_manager import build_ftmo_limits
+    from core.risk_manager import build_ftmo_limits
 
     return build_ftmo_limits(start_capital=160000.0, max_daily_loss=8000.0, max_total_loss=16000.0)
 

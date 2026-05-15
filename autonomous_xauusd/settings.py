@@ -60,15 +60,15 @@ class XAUUSDSettings:
     postgres_url: str
     telegram_bot_token: str
     telegram_chat_id: str
+    telegram_owner_user_id: str
+    telegram_control_api_key: str
+    telegram_backend_base_url: str
     train_every_days: int
     daily_report_hour_utc: int
     dashboard_host: str
     dashboard_port: int
     model_artifact_path: Path
     default_parameters: StrategyParameters
-    ccxt_exchange: str
-    ccxt_api_key: str
-    ccxt_api_secret: str
     sentiment_symbol: str
     sentiment_cache_minutes: int
     sentiment_filter_threshold: float
@@ -148,15 +148,18 @@ def load_settings(base_dir: Path | None = None) -> XAUUSDSettings:
         postgres_url=postgres_url,
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
+        telegram_owner_user_id=os.getenv("TELEGRAM_OWNER_USER_ID", "").strip(),
+        telegram_control_api_key=os.getenv(
+            "TELEGRAM_CONTROL_API_KEY",
+            os.getenv("API_KEY", os.getenv("SECRET_KEY", "")),
+        ).strip(),
+        telegram_backend_base_url=os.getenv("TELEGRAM_BACKEND_BASE_URL", "http://127.0.0.1:8000").strip() or "http://127.0.0.1:8000",
         train_every_days=_env_int("AUTO_TRAIN_EVERY_DAYS", 7),
         daily_report_hour_utc=_env_int("AUTO_DAILY_REPORT_HOUR_UTC", 19),
         dashboard_host=os.getenv("AUTO_DASHBOARD_HOST", "127.0.0.1").strip() or "127.0.0.1",
         dashboard_port=_env_int("AUTO_DASHBOARD_PORT", 8502),
         model_artifact_path=root / os.getenv("AUTO_MODEL_ARTIFACT_PATH", "artifacts/xauusd_feedback_model.joblib"),
         default_parameters=default_parameters,
-        ccxt_exchange=os.getenv("CCXT_EXCHANGE", "").strip().lower(),
-        ccxt_api_key=os.getenv("CCXT_API_KEY", "").strip(),
-        ccxt_api_secret=os.getenv("CCXT_API_SECRET", "").strip(),
         sentiment_symbol=os.getenv("SENTIMENT_SYMBOL", "GC=F").strip() or "GC=F",
         sentiment_cache_minutes=_env_int("SENTIMENT_CACHE_MINUTES", 30),
         sentiment_filter_threshold=_env_float("SENTIMENT_FILTER_THRESHOLD", 0.5),

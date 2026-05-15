@@ -49,6 +49,7 @@ class TestSettings:
         with pytest.raises(ValueError, match="SECRET_KEY is required"):
             Settings(
                 app_env="production",
+                secret_key="",
                 auth_admin_username="admin",
                 auth_admin_password_hash="hash",
                 cors_origins=("https://example.com",),

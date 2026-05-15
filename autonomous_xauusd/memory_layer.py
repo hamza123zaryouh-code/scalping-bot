@@ -78,6 +78,33 @@ class RuntimeState(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ControlCommand(Base):
+    __tablename__ = "control_commands"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    command: Mapped[str] = mapped_column(String(64), index=True)
+    source: Mapped[str] = mapped_column(String(32), index=True, default="telegram")
+    requested_by: Mapped[str] = mapped_column(String(128), index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(32), index=True, default="pending")
+    result_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class TelegramActionLog(Base):
+    __tablename__ = "telegram_action_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telegram_user_id: Mapped[str] = mapped_column(String(64), index=True)
+    telegram_username: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    action: Mapped[str] = mapped_column(String(128), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class MemoryLayer:
     def __init__(self, database_url: str) -> None:
         self.engine = create_engine(database_url, future=True)
@@ -132,6 +159,150 @@ class MemoryLayer:
                 session.add(state)
             else:
                 state.value = value
+
+    def get_bot_control_state(self) -> dict[str, Any]:
+        return self.get_runtime_state("bot_control") or {
+            "bot_active": True,
+            "trading_paused": False,
+            "signals_enabled": True,
+            "emergency_stop": False,
+        }
+
+    def set_bot_control_state(self, **updates: Any) -> dict[str, Any]:
+        current = self.get_bot_control_state()
+        merged = {
+            **current,
+            **updates,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        self.set_runtime_state("bot_control", merged)
+        return merged
+
+    def enqueue_control_command(
+        self,
+        command: str,
+        requested_by: str,
+        payload: dict[str, Any] | None = None,
+        source: str = "telegram",
+    ) -> dict[str, Any]:
+        with self.session_scope() as session:
+            row = ControlCommand(
+                command=command,
+                source=source,
+                requested_by=requested_by,
+                payload=payload or {},
+                status="pending",
+            )
+            session.add(row)
+            session.flush()
+            return {
+                "id": row.id,
+                "command": row.command,
+                "status": row.status,
+                "requested_by": row.requested_by,
+                "payload": dict(row.payload or {}),
+                "source": row.source,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+
+    def fetch_pending_control_commands(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.session_scope() as session:
+            rows = session.scalars(
+                select(ControlCommand)
+                .where(ControlCommand.status == "pending")
+                .order_by(ControlCommand.created_at.asc(), ControlCommand.id.asc())
+                .limit(limit)
+            ).all()
+            return [
+                {
+                    "id": row.id,
+                    "command": row.command,
+                    "status": row.status,
+                    "requested_by": row.requested_by,
+                    "payload": dict(row.payload or {}),
+                    "source": row.source,
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                }
+                for row in rows
+            ]
+
+    def update_control_command(
+        self,
+        command_id: int,
+        status: str,
+        result_message: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        with self.session_scope() as session:
+            row = session.get(ControlCommand, command_id)
+            if row is None:
+                return
+            row.status = status
+            row.result_message = result_message
+            row.error_message = error_message
+            row.executed_at = datetime.utcnow()
+
+    def recent_control_commands(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.session_scope() as session:
+            rows = session.scalars(
+                select(ControlCommand)
+                .order_by(ControlCommand.created_at.desc(), ControlCommand.id.desc())
+                .limit(limit)
+            ).all()
+            return [
+                {
+                    "id": row.id,
+                    "command": row.command,
+                    "status": row.status,
+                    "requested_by": row.requested_by,
+                    "payload": dict(row.payload or {}),
+                    "source": row.source,
+                    "result_message": row.result_message,
+                    "error_message": row.error_message,
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                    "executed_at": row.executed_at.isoformat() if row.executed_at else None,
+                }
+                for row in rows
+            ]
+
+    def log_telegram_action(
+        self,
+        telegram_user_id: str,
+        action: str,
+        status: str,
+        details: dict[str, Any] | None = None,
+        telegram_username: str | None = None,
+    ) -> None:
+        with self.session_scope() as session:
+            session.add(
+                TelegramActionLog(
+                    telegram_user_id=telegram_user_id,
+                    telegram_username=telegram_username,
+                    action=action,
+                    status=status,
+                    details=details or {},
+                )
+            )
+
+    def recent_telegram_actions(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.session_scope() as session:
+            rows = session.scalars(
+                select(TelegramActionLog)
+                .order_by(TelegramActionLog.created_at.desc(), TelegramActionLog.id.desc())
+                .limit(limit)
+            ).all()
+            return [
+                {
+                    "id": row.id,
+                    "telegram_user_id": row.telegram_user_id,
+                    "telegram_username": row.telegram_username,
+                    "action": row.action,
+                    "status": row.status,
+                    "details": dict(row.details or {}),
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                }
+                for row in rows
+            ]
 
     def log_trade_open(self, execution: ExecutionResult, sentiment_score: float | None = None) -> None:
         features = execution.features

@@ -2,12 +2,9 @@
 from __future__ import annotations
 
 import logging
-import sys
+import os
 import time
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from pathlib import Path  # noqa: F401 — kept for potential future use
 
 from monitoring.health_check import run_health_check
 
@@ -24,15 +21,15 @@ _last_alerts: dict[str, float] = {}
 
 
 def _send_telegram(message: str) -> bool:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if not token or not chat_id:
+        return False
     try:
-        from config import load_live_bot_config
-        cfg = load_live_bot_config()
-        if not cfg.telegram_ready:
-            return False
         import requests
         r = requests.post(
-            f"https://api.telegram.org/bot{cfg.telegram_bot_token}/sendMessage",
-            data={"chat_id": cfg.telegram_chat_id, "text": f"[WATCHDOG] {message}"},
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data={"chat_id": chat_id, "text": f"[WATCHDOG] {message}"},
             timeout=10,
         )
         return r.ok

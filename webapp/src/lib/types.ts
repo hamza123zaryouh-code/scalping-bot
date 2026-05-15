@@ -109,17 +109,74 @@ export interface MonthlyPnL {
   win_rate: number;
 }
 
-export interface BacktestResult {
+export interface WeeklyBacktestSummary {
+  week: string;
+  week_start: string;
+  trades: number;
+  pnl: number;
+  return_pct: number;
+  start_equity: number;
+  end_equity: number;
+  win_rate: number;
+}
+
+export interface BacktestMetricsSummary {
+  total_trades: number;
+  win_rate: number;
+  profit_factor: number;
+  sharpe_ratio: number;
+  max_drawdown_pct: number;
+  total_return_pct: number;
+  avg_win: number;
+  avg_loss: number;
+  expectancy: number;
+  calmar_ratio: number;
+  ftmo_passed: boolean;
+  challenge_days: number;
+}
+
+export interface BacktestRunResult {
+  task_id: string;
+  metrics: BacktestMetricsSummary;
+  trades: Array<{
+    side: string;
+    entry_time: string;
+    exit_time: string;
+    entry_price: number;
+    exit_price: number;
+    stop_loss: number;
+    take_profit: number;
+    size: number;
+    pnl: number;
+    cumulative_equity: number;
+  }>;
+  equity_curve: Array<{
+    timestamp: string;
+    capital: number;
+    pnl: number;
+  }>;
+  monthly_summary: MonthlyPnL[];
+  weekly_summary: WeeklyBacktestSummary[];
+  chart_path?: string | null;
+}
+
+export interface BacktestHistoryItem {
   id?: number;
+  task_id?: string;
   filename?: string;
   created?: string;
+  created_at?: string;
   strategy?: string;
   total_return?: number;
+  total_return_pct?: number;
   max_drawdown?: number;
+  max_drawdown_pct?: number;
   sharpe_ratio?: number;
   win_rate?: number;
   profit_factor?: number;
   total_trades?: number;
+  start_date?: string;
+  end_date?: string;
   parameters?: Record<string, unknown>;
   [key: string]: unknown;
 }

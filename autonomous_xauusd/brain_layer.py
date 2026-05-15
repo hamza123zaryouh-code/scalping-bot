@@ -1,71 +1,48 @@
+"""
+XAUUSD V17 Brain Layer — ML Intelligence + V16 Strategy Engine
+==============================================================
+Verbeterd van V16 naar V17:
+  - Gebruikt core.strategy_engine als ENIGE signaallogica
+  - 6 signaaltypen (A_EMACROSS t/m F_MSS)
+  - Enhanced ML training met meer features
+  - Sentiment-aware signal generation
+  - Betere parameter override logica
+  - Pattern clustering voor setup kwaliteit
+"""
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
+from core.strategy_engine import StrategyEngine, SignalResult, get_engine
 from .models import SentimentScore, SignalDecision, StrategyParameters, TrainingOutcome
+
+logger = logging.getLogger(__name__)
 
 _REGIME_SCORE: dict[str, int] = {
     "STERK_BULL": 2,
+    "BULL": 1,
     "ZWAK_BULL": 1,
     "CHOPPY": 0,
     "ZWAK_BEAR": -1,
+    "BEAR": -1,
     "STERK_BEAR": -2,
 }
 
-
-def _ema(series: pd.Series, span: int) -> pd.Series:
-    return series.ewm(span=span, adjust=False).mean()
-
-
-def _rsi(close: pd.Series, period: int) -> pd.Series:
-    delta = close.diff()
-    gain = delta.clip(lower=0.0).rolling(period).mean()
-    loss = (-delta).clip(lower=0.0).rolling(period).mean().replace(0.0, np.nan)
-    return (100.0 - 100.0 / (1.0 + gain / loss)).fillna(50.0)
-
-
-def _atr_ewm(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
-    tr = pd.concat(
-        [(high - low).abs(), (high - close.shift(1)).abs(), (low - close.shift(1)).abs()],
-        axis=1,
-    ).max(axis=1)
-    return tr.ewm(com=period - 1, adjust=False).mean()
-
-
-def _adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
-    up = high.diff()
-    down = -low.diff()
-    plus_dm = ((up > down) & (up > 0)) * up
-    minus_dm = ((down > up) & (down > 0)) * down
-    atr = _atr_ewm(high, low, close, period).replace(0, np.nan)
-    plus_di = 100 * plus_dm.ewm(com=period - 1, adjust=False).mean() / atr
-    minus_di = 100 * minus_dm.ewm(com=period - 1, adjust=False).mean() / atr
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
-    return dx.ewm(com=period - 1, adjust=False).mean().fillna(0)
-
-
-def _h4_regime(e21: float, e50: float, e200: float, adx: float, slope: float, adx_strong: float, adx_weak: float) -> str:
-    bull = e21 > e50
-    bear = e21 < e50
-    if bull and adx >= adx_strong and slope > 0 and e50 > e200:
-        return "STERK_BULL"
-    if bull and adx >= adx_weak:
-        return "ZWAK_BULL"
-    if bear and adx >= adx_strong and slope < 0 and e50 < e200:
-        return "STERK_BEAR"
-    if bear and adx >= adx_weak:
-        return "ZWAK_BEAR"
-    return "CHOPPY"
+# Vertaaltabel: V17 StrategyEngine → V16 SignalDecision compatibel
+_SIDE_MAP = {"long": "buy", "short": "sell"}
 
 
 def derive_parameter_overrides(
@@ -74,6 +51,10 @@ def derive_parameter_overrides(
     feature_importances: dict[str, float],
     accuracy: float,
 ) -> dict[str, float]:
+    """
+    Leert optimale parameters uit winnende trades.
+    Gebruikt feature importance om te focussen op de meest impactvolle parameters.
+    """
     if closed_trades.empty:
         return {}
 
@@ -81,99 +62,120 @@ def derive_parameter_overrides(
     overrides: dict[str, float] = {}
 
     if not winners.empty:
+        # RSI parameter aanpassing
+        rsi_importance = max(
+            feature_importances.get("rsi_fast", 0.0),
+            feature_importances.get("rsi", 0.0),
+        )
+
         long_w = winners[winners["side"] == "buy"]
         short_w = winners[winners["side"] == "sell"]
-        rsi_importance = feature_importances.get("rsi_fast", feature_importances.get("rsi", 0.0))
 
         if not long_w.empty and rsi_importance >= 0.05:
             col = "rsi_fast" if "rsi_fast" in long_w.columns else "rsi"
             overrides["rsi_pullback_strong"] = float(np.clip(long_w[col].median(), 25.0, 40.0))
             overrides["rsi_pullback_weak"] = float(np.clip(long_w[col].median() + 5.0, 28.0, 45.0))
+
         if not short_w.empty and rsi_importance >= 0.05:
             col = "rsi_fast" if "rsi_fast" in short_w.columns else "rsi"
             mirror = 100 - float(short_w[col].median())
             overrides["rsi_pullback_strong"] = float(np.clip(mirror, 25.0, 40.0))
 
+        # Take profit aanpassing op basis van winner R/R
         winner_rr = winners["reward_risk_ratio"].replace([np.inf, -np.inf], np.nan).dropna()
         if not winner_rr.empty:
             median_rr = float(winner_rr.median())
             if accuracy >= 0.57 and median_rr >= 2.0:
-                overrides["take_profit_atr"] = float(np.clip(current_parameters.take_profit_atr + 0.2, 2.0, 4.5))
+                overrides["take_profit_atr"] = float(
+                    np.clip(current_parameters.take_profit_atr + 0.2, 2.0, 4.5)
+                )
             elif accuracy < 0.50:
-                overrides["take_profit_atr"] = float(np.clip(current_parameters.take_profit_atr - 0.2, 2.0, 3.5))
+                overrides["take_profit_atr"] = float(
+                    np.clip(current_parameters.take_profit_atr - 0.2, 2.0, 3.5)
+                )
 
+        # Beste signaaltype identificeren
+        if "signal_type" in winners.columns:
+            best_types = winners["signal_type"].value_counts()
+            if not best_types.empty:
+                overrides["_best_signal_type"] = str(best_types.index[0])
+
+    # Risk aanpassing op basis van accuracy
     if accuracy < 0.45:
-        overrides["risk_strong_regime"] = float(np.clip(current_parameters.risk_strong_regime * 0.80, 0.005, current_parameters.risk_strong_regime))
-        overrides["risk_weak_regime"] = float(np.clip(current_parameters.risk_weak_regime * 0.80, 0.003, current_parameters.risk_weak_regime))
+        overrides["risk_strong_regime"] = float(
+            np.clip(current_parameters.risk_strong_regime * 0.80, 0.005, current_parameters.risk_strong_regime)
+        )
+        overrides["risk_weak_regime"] = float(
+            np.clip(current_parameters.risk_weak_regime * 0.80, 0.003, current_parameters.risk_weak_regime)
+        )
     elif accuracy >= 0.60:
-        overrides["risk_strong_regime"] = float(np.clip(current_parameters.risk_strong_regime * 1.05, 0.005, 0.020))
+        overrides["risk_strong_regime"] = float(
+            np.clip(current_parameters.risk_strong_regime * 1.05, 0.005, 0.020)
+        )
 
     return overrides
 
 
 class IntelligenceLayer:
+    """
+    V17 Intelligence Layer — verbeterde ML + strategy_engine integratie.
+
+    Signaallogica komt UITSLUITEND uit core.strategy_engine.
+    Deze klasse voegt toe:
+      - ML confidence scoring
+      - Feature store voor training
+      - Parameter override learning
+      - Setup quality ranking
+    """
+
     def __init__(self, artifact_path: Path) -> None:
         self.artifact_path = artifact_path
+        self._strategy_engine: StrategyEngine = get_engine()
+        self._ml_model = None
+        self._ml_scaler: Optional[StandardScaler] = None
+        self._ml_features: list[str] = []
+        self._ml_confidence: float = 0.5  # Default confidence
+        self._load_existing_model()
+
+    def _load_existing_model(self) -> None:
+        """Laad bestaand ML model als beschikbaar."""
+        if self.artifact_path.exists():
+            try:
+                artifact = joblib.load(self.artifact_path)
+                self._ml_model = artifact.get("model")
+                self._ml_scaler = artifact.get("scaler")
+                self._ml_features = artifact.get("feature_columns", [])
+                metrics = artifact.get("metrics", {})
+                self._ml_confidence = float(metrics.get("accuracy", 0.5))
+                logger.info(
+                    "ML model geladen: accuracy=%.1f%%, features=%d",
+                    self._ml_confidence * 100, len(self._ml_features),
+                )
+            except Exception as e:
+                logger.warning("ML model laden mislukt: %s", e)
 
     def prepare_market_frame(self, bars: pd.DataFrame, parameters: StrategyParameters) -> pd.DataFrame:
-        frame = bars.copy()
-        if len(frame) < 50:
-            return frame.iloc[0:0]
+        """
+        Verrijkt een OHLCV DataFrame via de core StrategyEngine.
+        Identiek resultaat aan V16 backtest indicatoren.
+        """
+        if len(bars) < 50:
+            return bars.iloc[0:0]
 
-        close = frame["close"].astype(float)
-        high = frame["high"].astype(float)
-        low = frame["low"].astype(float)
+        try:
+            frame = self._strategy_engine.prepare_features(bars)
+        except Exception as e:
+            logger.error("prepare_features mislukt: %s", e)
+            return bars.iloc[0:0]
 
-        frame["rsi"] = _rsi(close, parameters.rsi_period)
-        frame["rsi_fast"] = _rsi(close, parameters.rsi_fast_period)
-        frame["atr"] = _atr_ewm(high, low, close, parameters.atr_period)
-        frame["volatility"] = close.pct_change().rolling(parameters.volatility_window).std().fillna(0.0)
+        # Extra features voor ML training
+        if not frame.empty and "close" in frame.columns:
+            close = frame["close"].astype(float)
+            frame["volatility"] = close.pct_change().rolling(parameters.volatility_window).std().fillna(0.0)
+            frame["h4_regime_score"] = frame["h4_reg"].map(_REGIME_SCORE).fillna(0).astype(float)
+            frame["d1_bull"] = (frame["d1_trend"] == "bull").astype(float)
 
-        # ── H4 layer ──────────────────────────────────────────────────────────
-        h4 = frame[["open", "high", "low", "close"]].resample("4h").agg(
-            {"open": "first", "high": "max", "low": "min", "close": "last"}
-        ).dropna()
-
-        if len(h4) >= 15:
-            h4["e21"] = _ema(h4["close"], 21)
-            h4["e50"] = _ema(h4["close"], 50)
-            h4["e200"] = _ema(h4["close"], 200)
-            h4["slope"] = h4["e21"] - h4["e21"].shift(3)
-            h4["adx"] = _adx(h4["high"], h4["low"], h4["close"], 14)
-            h4["atr_h4"] = _atr_ewm(h4["high"], h4["low"], h4["close"], 14)
-
-            h4["regime"] = h4.apply(
-                lambda r: _h4_regime(
-                    r["e21"], r["e50"], r["e200"], r["adx"], r["slope"],
-                    parameters.h4_adx_strong, parameters.h4_adx_weak,
-                ),
-                axis=1,
-            )
-
-            frame["h4_regime"] = h4["regime"].reindex(frame.index, method="ffill").fillna("CHOPPY")
-            frame["h4_atr"] = h4["atr_h4"].reindex(frame.index, method="ffill").bfill()
-            frame["h4_adx"] = h4["adx"].reindex(frame.index, method="ffill").fillna(0.0)
-        else:
-            frame["h4_regime"] = "CHOPPY"
-            frame["h4_atr"] = frame["atr"]
-            frame["h4_adx"] = 0.0
-
-        # ── D1 layer ──────────────────────────────────────────────────────────
-        d1 = frame[["open", "high", "low", "close"]].resample("1D").agg(
-            {"open": "first", "high": "max", "low": "min", "close": "last"}
-        ).dropna()
-
-        if len(d1) >= 10:
-            d1["e50"] = _ema(d1["close"], 50)
-            d1["trend"] = (d1["close"] > d1["e50"]).map({True: "bull", False: "bear"})
-            frame["d1_trend"] = d1["trend"].reindex(frame.index, method="ffill").fillna("bull")
-        else:
-            frame["d1_trend"] = "bull"
-
-        frame["h4_regime_score"] = frame["h4_regime"].map(_REGIME_SCORE).fillna(0).astype(float)
-        frame["d1_bull"] = (frame["d1_trend"] == "bull").astype(float)
-
-        return frame.dropna(subset=["rsi", "atr", "h4_atr", "h4_regime"]).copy()
+        return frame
 
     def generate_signal(
         self,
@@ -184,81 +186,120 @@ class IntelligenceLayer:
         sentiment: SentimentScore | None = None,
         sentiment_threshold: float = 0.5,
     ) -> SignalDecision | None:
+        """
+        Genereert een handelssignaal via de core StrategyEngine.
+
+        Alle signaallogica (6 types) komt uit strategy_engine.
+        ML confidence wordt gebruikt als extra filter en confidence score.
+        Sentiment wordt doorgegeven voor boost/blokkering.
+        """
         if len(frame) < 4:
             return None
 
-        bar = frame.iloc[-2]
-        regime = str(bar.get("h4_regime", "CHOPPY"))
-        d1_trend = str(bar.get("d1_trend", "bull"))
-        rsi_fast = float(bar.get("rsi_fast", 50.0))
-        atr_h4 = float(bar.get("h4_atr", bar["atr"]))
-        close = float(bar["close"])
-
-        if not math.isfinite(atr_h4) or atr_h4 <= 0:
-            return None
-
-        if regime == "CHOPPY":
-            return None
-
-        side: str | None = None
-        sig_type: str | None = None
-
-        if regime == "STERK_BULL" and d1_trend == "bull" and rsi_fast < parameters.rsi_pullback_strong:
-            side, sig_type = "buy", "STERK_LONG"
-        elif regime == "ZWAK_BULL" and d1_trend == "bull" and rsi_fast < parameters.rsi_pullback_weak:
-            side, sig_type = "buy", "ZWAK_LONG"
-        elif regime == "STERK_BEAR" and d1_trend == "bear" and rsi_fast > (100 - parameters.rsi_pullback_strong):
-            side, sig_type = "sell", "STERK_SHORT"
-        elif regime == "ZWAK_BEAR" and d1_trend == "bear" and rsi_fast > (100 - parameters.rsi_pullback_weak):
-            side, sig_type = "sell", "ZWAK_SHORT"
-
-        if side is None:
-            return None
-
-        # Sentiment filter: blokkeer alleen bij sterke tegenstrijdigheid (sterk_bearish vs long)
-        # Zwakke bias (bullish/bearish) blokkeert niet — alleen sterk_bearish/sterk_bullish
+        # Sentiment parameters doorgeven
+        sent_score = 0.0
+        sent_label = "neutral"
         if sentiment is not None:
-            if side == "buy" and sentiment.label == "sterk_bearish":
-                return None
-            if side == "sell" and sentiment.label == "sterk_bullish":
-                return None
+            sent_score = float(sentiment.score)
+            sent_label = str(sentiment.label)
 
-        direction = 1 if side == "buy" else -1
-        sl_dist = parameters.stop_loss_atr * atr_h4
-        tp_dist = parameters.take_profit_atr * atr_h4
-
-        features = {
-            "rsi": float(bar["rsi"]),
-            "rsi_fast": rsi_fast,
-            "h4_regime": regime,
-            "h4_regime_score": float(bar.get("h4_regime_score", 0.0)),
-            "h4_adx": float(bar.get("h4_adx", 0.0)),
-            "h4_atr": atr_h4,
-            "d1_trend": d1_trend,
-            "d1_bull": float(bar.get("d1_bull", 1.0)),
-            "atr": float(bar["atr"]),
-            "volatility": float(bar.get("volatility", 0.0)),
-            "signal_type": sig_type,
+        # Strategie configuratie uit parameters
+        cfg = {
+            "risk_a": float(parameters.risk_strong_regime),
+            "risk_b": float(parameters.risk_weak_regime) * 1.2,
+            "risk_c": float(parameters.risk_weak_regime),
+            "adx_min": float(parameters.h4_adx_weak),
+            "h4adx_min": float(parameters.h4_adx_weak),
+            "tp1_r": float(parameters.take_profit_atr) * 0.5,
+            "tp2_r": float(parameters.take_profit_atr),
+            "tp3_r": float(parameters.take_profit_atr) * 1.5,
+            "sl_atr": float(parameters.stop_loss_atr),
+            "trailing": True,
         }
+
+        # ML confidence score berekenen
+        ml_conf = self._get_ml_confidence(frame)
+
+        # Signaal genereren via unified engine
+        signal: Optional[SignalResult] = self._strategy_engine.generate_signal(
+            frame,
+            cfg=cfg,
+            sentiment_score=sent_score,
+            sentiment_label=sent_label,
+            ml_confidence=ml_conf,
+        )
+
+        if signal is None:
+            return None
+
+        # Vertaal naar SignalDecision (backward compatible met autonomous engine)
+        bar = frame.iloc[-2]
+        close = float(bar["close"]) if not math.isnan(float(bar.get("close", 0))) else signal.entry_price
 
         return SignalDecision(
             symbol=symbol,
             timeframe=timeframe,
-            side=side,
-            opened_at=pd.Timestamp(bar.name).to_pydatetime(),
-            entry_price=close,
-            stop_loss=close - direction * sl_dist,
-            take_profit=close + direction * tp_dist,
-            market_regime=regime,
-            reason=f"{sig_type}: H4={regime} D1={d1_trend} RSI5={rsi_fast:.1f} ATRh4={atr_h4:.1f}",
-            features=features,
+            side=_SIDE_MAP.get(signal.direction, "buy"),
+            opened_at=signal.timestamp or datetime.utcnow(),
+            entry_price=signal.entry_price,
+            stop_loss=signal.stop_loss,
+            take_profit=signal.take_profit_2,  # Gebruik TP2 als primaire TP
+            market_regime=signal.h4_regime,
+            reason=signal.reason,
+            features={
+                **signal.features,
+                "signal_type": signal.signal_type,
+                "priority": signal.priority,
+                "confidence": signal.confidence,
+                "tp1": signal.take_profit_1,
+                "tp2": signal.take_profit_2,
+                "tp3": signal.take_profit_3,
+                "risk_pct": signal.risk_pct,
+                "sentiment_score": sent_score,
+                "sentiment_label": sent_label,
+                "ml_confidence": ml_conf,
+            },
         )
 
-    def train_model(self, closed_trades: pd.DataFrame, current_parameters: StrategyParameters) -> TrainingOutcome | None:
+    def _get_ml_confidence(self, frame: pd.DataFrame) -> float:
+        """Bereken ML confidence score op basis van huidig model."""
+        if self._ml_model is None or not self._ml_features:
+            return self._ml_confidence
+
+        try:
+            bar = frame.iloc[-2]
+            feature_values = []
+            for col in self._ml_features:
+                val = bar.get(col, 0.0)
+                feature_values.append(float(val) if not math.isnan(float(val or 0)) else 0.0)
+
+            X = np.array(feature_values).reshape(1, -1)
+            if self._ml_scaler:
+                X = self._ml_scaler.transform(X)
+
+            proba = self._ml_model.predict_proba(X)[0]
+            return float(max(proba))  # Confidence = max klasse probabiliteit
+        except Exception as e:
+            logger.debug("ML confidence berekening mislukt: %s", e)
+            return self._ml_confidence
+
+    def train_model(
+        self,
+        closed_trades: pd.DataFrame,
+        current_parameters: StrategyParameters,
+    ) -> TrainingOutcome | None:
+        """
+        Traint het ML model op basis van historische trades.
+
+        V17 verbetering: gebruikt GradientBoosting als ensemble
+        naast RandomForest, kiest het beste model.
+        """
         if closed_trades.empty or len(closed_trades) < 25:
             return None
 
         frame = closed_trades.copy()
+
+        # Extended feature set voor V17
         feature_columns = [
             "rsi",
             "rsi_fast",
@@ -270,10 +311,14 @@ class IntelligenceLayer:
             "volatility",
             "reward_risk_ratio",
             "holding_minutes",
+            "sentiment_score",
+            "adx14",
+            "macd_hist",
         ]
         available = [c for c in feature_columns if c in frame.columns]
         frame["label"] = (frame["pnl"] > 0).astype(int)
         frame = frame.dropna(subset=available)
+
         if frame["label"].nunique() < 2 or len(frame) < 25:
             return None
 
@@ -284,35 +329,77 @@ class IntelligenceLayer:
             X, y, test_size=0.25, random_state=42, stratify=y,
         )
 
-        model = RandomForestClassifier(
-            n_estimators=250,
-            max_depth=6,
-            min_samples_leaf=2,
-            class_weight="balanced",
-            random_state=42,
-        )
-        model.fit(X_train, y_train)
+        # Normalisatie
+        scaler = StandardScaler()
+        X_train_s = scaler.fit_transform(X_train)
+        X_test_s = scaler.transform(X_test)
 
-        preds = model.predict(X_test)
+        # Twee modellen — kies het beste
+        rf = RandomForestClassifier(
+            n_estimators=250, max_depth=6,
+            min_samples_leaf=2, class_weight="balanced", random_state=42,
+        )
+        gb = GradientBoostingClassifier(
+            n_estimators=150, max_depth=4,
+            learning_rate=0.05, random_state=42,
+        )
+
+        rf.fit(X_train_s, y_train)
+        gb.fit(X_train_s, y_train)
+
+        rf_acc = accuracy_score(y_test, rf.predict(X_test_s))
+        gb_acc = accuracy_score(y_test, gb.predict(X_test_s))
+
+        if gb_acc > rf_acc:
+            best_model = gb
+            model_name = "GradientBoosting"
+        else:
+            best_model = rf
+            model_name = "RandomForest"
+
+        preds = best_model.predict(X_test_s)
         accuracy = float(accuracy_score(y_test, preds))
         precision = float(precision_score(y_test, preds, zero_division=0))
         recall = float(recall_score(y_test, preds, zero_division=0))
         f1 = float(f1_score(y_test, preds, zero_division=0))
-        importances = {name: float(score) for name, score in zip(available, model.feature_importances_)}
+
+        # Feature importances
+        if hasattr(best_model, "feature_importances_"):
+            importances = {
+                name: float(score)
+                for name, score in zip(available, best_model.feature_importances_)
+            }
+        else:
+            importances = {name: 1.0 / len(available) for name in available}
+
         overrides = derive_parameter_overrides(frame, current_parameters, importances, accuracy)
+        self._ml_confidence = accuracy
+        self._ml_model = best_model
+        self._ml_scaler = scaler
+        self._ml_features = available
 
         self.artifact_path.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(
             {
                 "trained_at": datetime.utcnow().isoformat(),
+                "model_type": model_name,
                 "parameters": asdict(current_parameters),
                 "feature_columns": available,
-                "model": model,
-                "metrics": {"accuracy": accuracy, "precision": precision, "recall": recall, "f1_score": f1},
+                "model": best_model,
+                "scaler": scaler,
+                "metrics": {
+                    "accuracy": accuracy, "precision": precision,
+                    "recall": recall, "f1_score": f1,
+                },
                 "feature_importances": importances,
                 "parameter_overrides": overrides,
             },
             self.artifact_path,
+        )
+
+        logger.info(
+            "ML model getraind (%s): accuracy=%.1f%%, precision=%.1f%%, recall=%.1f%%",
+            model_name, accuracy * 100, precision * 100, recall * 100,
         )
 
         return TrainingOutcome(
@@ -325,5 +412,36 @@ class IntelligenceLayer:
             feature_importances=importances,
             parameter_overrides=overrides,
             model_path=str(self.artifact_path),
-            notes="Weekly feedback loop: XAUUSD v9 multi-timeframe parameters updated.",
+            notes=f"V17 {model_name} model: strategy_engine geïntegreerd, {len(available)} features",
         )
+
+    def get_setup_quality_score(self, signal: SignalResult) -> float:
+        """
+        Berekent een kwaliteitsscore (0-10) voor een setup op basis van:
+        - Signaal prioriteit (A=6, F=1)
+        - H4 regime sterkte
+        - ML confidence
+        - Sentiment alignment
+        """
+        priority_score = signal.priority / 6.0 * 4.0  # Max 4 punten
+
+        regime_scores = {
+            "STERK_BULL": 3.0, "STERK_BEAR": 3.0,
+            "BULL": 2.0, "BEAR": 2.0,
+            "ZWAK_BULL": 1.0, "ZWAK_BEAR": 1.0,
+            "CHOPPY": 0.0,
+        }
+        regime_score = regime_scores.get(signal.h4_regime, 0.0)  # Max 3 punten
+
+        ml_score = signal.confidence * 2.0  # Max 2 punten via ML
+
+        sent_score = 0.0
+        if signal.sentiment_label in ("sterk_bullish",) and signal.direction == "long":
+            sent_score = 1.0
+        elif signal.sentiment_label in ("sterk_bearish",) and signal.direction == "short":
+            sent_score = 1.0
+        elif signal.sentiment_label in ("bullish", "bearish"):
+            sent_score = 0.5
+
+        total = priority_score + regime_score + ml_score + sent_score
+        return round(min(10.0, total), 2)

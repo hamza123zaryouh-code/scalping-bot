@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import sys
 from contextlib import asynccontextmanager
+import json
 from json import JSONDecodeError
 from pathlib import Path
 
@@ -16,10 +17,25 @@ from starlette.websockets import WebSocketState
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from autonomous_xauusd.memory_layer import MemoryLayer
-from backend.api.routes import analytics, auth, backtest, dashboard, memory, optimizer, reports, risk, signals, trading
+from backend.api.routes import (
+    analytics,
+    auth,
+    backtest,
+    dashboard,
+    logs,
+    memory,
+    optimizer,
+    reports,
+    risk,
+    signals,
+    telegram,
+    trading,
+)
 from backend.core.config import Settings, get_settings
 from backend.core.logging import setup_logging
 from backend.core.security import decode_access_token
+from backend.services.log_stream_service import get_log_stream_service
+from backend.services.ws_stream_service import get_stream_service
 from backend.websocket.manager import ws_manager
 
 logger = logging.getLogger(__name__)
@@ -36,13 +52,33 @@ async def lifespan(app: FastAPI):
     setup_logging(level="DEBUG" if not settings.is_production else "INFO")
     logger.info("XAUUSD Trading Platform API v%s starting (%s)", settings.app_version, settings.app_env)
 
+    # Install live log capture handler (must be before other startup logs)
+    log_svc = get_log_stream_service()
+    log_svc.install()
+
+    async def _ws_log_broadcast(record) -> None:
+        try:
+            await ws_manager.broadcast_event("log", record.to_dict())
+        except Exception:
+            pass
+
+    log_svc._handler.set_broadcast_callback(_ws_log_broadcast)
+
     try:
         _bootstrap_autonomous_database(settings)
         logger.info("Autonomous database schema initialized successfully.")
     except Exception as exc:
         logger.warning("Autonomous database unavailable (offline mode): %s", exc)
 
+    # Start WebSocket broadcaster and stream service
+    await ws_manager.start_broadcaster()
+    stream_svc = get_stream_service()
+    stream_svc.start()
+
     yield
+
+    await stream_svc.stop()
+    await ws_manager.stop_broadcaster()
     logger.info("XAUUSD Trading Platform API shutting down")
 
 
@@ -60,8 +96,6 @@ async def _close_policy_violation(websocket: WebSocket, reason: str) -> None:
 
 
 def _parse_client_message(raw_message: str) -> dict[str, object]:
-    import json
-
     try:
         payload = json.loads(raw_message)
     except JSONDecodeError as exc:
@@ -132,6 +166,8 @@ def create_app() -> FastAPI:
     app.include_router(trading.router, prefix=f"{prefix}/trading", tags=["trading"])
     app.include_router(memory.router, prefix=f"{prefix}/memory", tags=["memory"])
     app.include_router(optimizer.router, prefix=f"{prefix}/optimizer", tags=["optimizer"])
+    app.include_router(telegram.router, prefix=f"{prefix}/telegram", tags=["telegram"])
+    app.include_router(logs.router, prefix=f"{prefix}/logs", tags=["logs"])
 
     @app.websocket("/ws/live")
     async def websocket_live(websocket: WebSocket):

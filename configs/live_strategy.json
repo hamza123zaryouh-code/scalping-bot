@@ -1,0 +1,23 @@
+{
+  "risk_a": 0.0040,
+  "risk_b": 0.0030,
+  "risk_c": 0.0025,
+  "adx_min": 14,
+  "h4adx_min": 14,
+  "vol_mult": 1.00,
+  "tp1_r": 1.5,
+  "tp2_r": 2.5,
+  "tp3_r": 4.0,
+  "tp1_pct": 0.30,
+  "tp2_pct": 0.30,
+  "sl_atr": 1.5,
+  "sl_max": 2.0,
+  "max_dag": 6,
+  "sl_dag_max": 2,
+  "cooldown_h": 2,
+  "trailing": true,
+  "max_spread": 350,
+  "sentiment_enabled": true,
+  "circuit_breaker_enabled": true,
+  "_comment": "V17 live strategy configuratie — hot reload actief (wijzig zonder restart)"
+}

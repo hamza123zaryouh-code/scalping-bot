@@ -1,167 +1,253 @@
 "use client";
-import { useCallback } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { AppShell } from "../../components/layout/AppShell";
+import { WeeklyPerformanceChart } from "../../components/charts/WeeklyPerformanceChart";
 import { Card } from "../../components/ui/Card";
-import { Badge } from "../../components/ui/Badge";
-import { PageLoader } from "../../components/ui/Spinner";
 import { ErrorMessage } from "../../components/ui/Alert";
-import { useAutoRefresh } from "../../lib/hooks/useAutoRefresh";
+import { PageLoader } from "../../components/ui/Spinner";
 import { api } from "../../lib/api";
-import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
-import type { BacktestResult } from "../../lib/types";
+import { useAutoRefresh } from "../../lib/hooks/useAutoRefresh";
+import type { BacktestHistoryItem, BacktestRunResult, WeeklyBacktestSummary } from "../../lib/types";
 
-function fmtPct(v: unknown) {
-  const n = parseFloat(String(v));
-  return isNaN(n) ? "—" : `${n.toFixed(2)}%`;
+function formatEur(value: number) {
+  return new Intl.NumberFormat("nl-NL", {
+    style: "currency",
+    currency: "EUR",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
 }
-function fmtNum(v: unknown, dec = 2) {
-  const n = parseFloat(String(v));
-  return isNaN(n) ? "—" : n.toFixed(dec);
+
+function formatPct(value: number) {
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
+}
+
+function defaultBacktestPayload() {
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(end.getDate() - 120);
+
+  const fmt = (date: Date) => date.toISOString().slice(0, 10);
+  return {
+    start_date: fmt(start),
+    end_date: fmt(end),
+    starting_capital: 160000,
+    risk_per_trade: 0.0025,
+    sl_atr_multiplier: 1.5,
+    tp_atr_multiplier: 3.0,
+    max_open_trades: 3,
+    commission: 0.35,
+    spread_cost: 0.25,
+    symbol: "XAUUSD",
+  };
 }
 
 export default function BacktestPage() {
-  const histFetcher = useCallback(() => api.optimizationHistory(), []);
-  const rankFetcher = useCallback(() => api.performanceRanking(), []);
-  const btFetcher = useCallback(() => api.backtestResults(), []);
+  const latestFetcher = useCallback(() => api.latestBacktest(), []);
+  const historyFetcher = useCallback(() => api.backtestHistory(), []);
 
-  const { data: histRes, loading: histLoading, error: histError } = useAutoRefresh(histFetcher, 30000);
-  const { data: rankRes } = useAutoRefresh(rankFetcher, 30000);
-  const { data: btRes } = useAutoRefresh(btFetcher, 30000);
+  const {
+    data: latestRes,
+    loading: latestLoading,
+    error: latestError,
+    refetch: refetchLatest,
+  } = useAutoRefresh(latestFetcher, 60000);
+  const {
+    data: historyRes,
+    loading: historyLoading,
+    error: historyError,
+    refetch: refetchHistory,
+  } = useAutoRefresh(historyFetcher, 60000);
 
-  const runs = (histRes as { data: { runs: BacktestResult[] } } | null)?.data?.runs ?? [];
-  const ranking = (rankRes as { data: { ranking: Array<{ signal_type: string; total_pnl: number; count: number; wins: number; win_rate: number }> } } | null)?.data?.ranking ?? [];
+  const [runError, setRunError] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
 
-  const btData = (btRes as { data: unknown } | null)?.data;
+  const latest = (latestRes as { data: BacktestRunResult } | null)?.data ?? null;
+  const history = (historyRes as { data: BacktestHistoryItem[] } | null)?.data ?? [];
+  const weekly: WeeklyBacktestSummary[] = useMemo(() => latest?.weekly_summary ?? [], [latest]);
+
+  const bestWeek = useMemo(
+    () => weekly.reduce<WeeklyBacktestSummary | null>((best, row) => (!best || row.pnl > best.pnl ? row : best), null),
+    [weekly],
+  );
+  const worstWeek = useMemo(
+    () => weekly.reduce<WeeklyBacktestSummary | null>((worst, row) => (!worst || row.pnl < worst.pnl ? row : worst), null),
+    [weekly],
+  );
+
+  async function runBacktestAgain() {
+    try {
+      setRunning(true);
+      setRunError(null);
+      await api.runBacktest(defaultBacktestPayload());
+      await Promise.all([refetchLatest(), refetchHistory()]);
+    } catch (error) {
+      setRunError(error instanceof Error ? error.message : "Backtest mislukt");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  const noLatestYet = latestError?.includes("Nog geen backtest resultaat beschikbaar");
 
   return (
     <AppShell>
       <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+        <Card
+          title="Backtest Control"
+          subtitle="Run een nieuwe XAUUSD backtest en bekijk de weekresultaten in euro en procent"
+          action={(
+            <button
+              type="button"
+              onClick={runBacktestAgain}
+              disabled={running}
+              style={{
+                border: "1px solid var(--accent-blue)",
+                background: running ? "rgba(59,130,246,0.12)" : "rgba(59,130,246,0.18)",
+                color: "var(--accent-blue)",
+                borderRadius: 10,
+                padding: "10px 14px",
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: running ? "wait" : "pointer",
+              }}
+            >
+              {running ? "Backtest draait..." : "Run Backtest Opnieuw"}
+            </button>
+          )}
+        >
+          <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+            Standaard wordt de laatste 120 dagen op <strong>XAUUSD</strong> getest met startkapitaal van{" "}
+            <strong>{formatEur(160000)}</strong>.
+          </p>
+          {runError ? <div style={{ marginTop: 12 }}><ErrorMessage message={runError} /></div> : null}
+        </Card>
 
-        {/* Summary */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
-          {[
-            { label: "Total Runs", value: runs.length },
-            { label: "Best Win Rate", value: runs.length ? `${Math.max(...runs.map(r => Number(r.win_rate) || 0)).toFixed(1)}%` : "—" },
-            { label: "Best PF", value: runs.length ? Math.max(...runs.map(r => Number(r.profit_factor) || 0)).toFixed(2) : "—" },
-            { label: "Best Return", value: runs.length ? `${Math.max(...runs.map(r => Number(r.total_return) || 0)).toFixed(2)}%` : "—" },
-          ].map((s) => (
-            <div key={s.label} className="card">
-              <p className="stat-label">{s.label}</p>
-              <p style={{ fontSize: 26, fontWeight: 700, color: "var(--accent-blue)", marginTop: 6 }}>{s.value}</p>
+        {latestLoading && !latest ? <PageLoader /> : null}
+        {!latestLoading && latestError && !noLatestYet ? <ErrorMessage message={latestError} /> : null}
+        {noLatestYet ? (
+          <Card title="Nog Geen Backtest">
+            <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)" }}>
+              Er is nog geen opgeslagen backtestresultaat. Start hierboven een nieuwe run en de weekgrafiek verschijnt hier automatisch.
+            </p>
+          </Card>
+        ) : null}
+
+        {latest ? (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
+              {[
+                { label: "Total Return", value: formatPct(latest.metrics.total_return_pct), color: latest.metrics.total_return_pct >= 0 ? "var(--accent-green)" : "var(--accent-red)" },
+                { label: "Profit Factor", value: latest.metrics.profit_factor.toFixed(2), color: "var(--accent-blue)" },
+                { label: "Win Rate", value: formatPct(latest.metrics.win_rate * 100), color: latest.metrics.win_rate >= 0.5 ? "var(--accent-green)" : "var(--accent-yellow)" },
+                { label: "Max Drawdown", value: `${latest.metrics.max_drawdown_pct.toFixed(2)}%`, color: "var(--accent-red)" },
+                { label: "Weeks", value: String(weekly.length), color: "var(--text-primary)" },
+                { label: "Trades", value: String(latest.metrics.total_trades), color: "var(--text-primary)" },
+                { label: "Best Week", value: bestWeek ? formatEur(bestWeek.pnl) : "—", color: "var(--accent-green)" },
+                { label: "Worst Week", value: worstWeek ? formatEur(worstWeek.pnl) : "—", color: "var(--accent-red)" },
+              ].map((item) => (
+                <div key={item.label} className="card">
+                  <p className="stat-label">{item.label}</p>
+                  <p style={{ fontSize: 22, fontWeight: 700, color: item.color, marginTop: 6 }}>{item.value}</p>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
 
-        {/* Optimization History Table */}
-        <Card title="Optimization Runs" subtitle="Stored backtest results">
-          {histLoading ? <PageLoader /> : histError ? <ErrorMessage message={histError} /> : (
+            <Card title="Weekly Backtest Result" subtitle="Per week in euro en procent">
+              <WeeklyPerformanceChart data={weekly} height={320} />
+            </Card>
+
+            <Card title="Weekly Breakdown" subtitle="Iedere week met PnL, return en equity">
+              <div style={{ overflowX: "auto" }}>
+                <table className="table-dark">
+                  <thead>
+                    <tr>
+                      <th>Week</th>
+                      <th>Week Start</th>
+                      <th>Trades</th>
+                      <th>PnL EUR</th>
+                      <th>Return %</th>
+                      <th>Start Equity</th>
+                      <th>End Equity</th>
+                      <th>Win Rate</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {weekly.map((row) => (
+                      <tr key={row.week}>
+                        <td style={{ fontWeight: 700, color: "var(--text-primary)" }}>{row.week}</td>
+                        <td style={{ color: "var(--text-secondary)" }}>{row.week_start}</td>
+                        <td>{row.trades}</td>
+                        <td style={{ color: row.pnl >= 0 ? "var(--accent-green)" : "var(--accent-red)", fontWeight: 700 }}>
+                          {row.pnl >= 0 ? "+" : ""}{formatEur(row.pnl)}
+                        </td>
+                        <td style={{ color: row.return_pct >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
+                          {formatPct(row.return_pct)}
+                        </td>
+                        <td>{formatEur(row.start_equity)}</td>
+                        <td>{formatEur(row.end_equity)}</td>
+                        <td>{(row.win_rate * 100).toFixed(1)}%</td>
+                      </tr>
+                    ))}
+                    {!weekly.length ? (
+                      <tr>
+                        <td colSpan={8} style={{ textAlign: "center", color: "var(--text-muted)", padding: "36px 0" }}>
+                          Geen weekresultaten beschikbaar
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </>
+        ) : null}
+
+        <Card title="Recent Backtest Runs" subtitle="Laatste runs uit de actieve backend sessie">
+          {historyLoading ? <PageLoader /> : historyError ? <ErrorMessage message={historyError} /> : (
             <div style={{ overflowX: "auto" }}>
               <table className="table-dark">
                 <thead>
                   <tr>
-                    <th>File</th>
-                    <th>Strategy</th>
-                    <th>Return</th>
-                    <th>Max DD</th>
-                    <th>Sharpe</th>
-                    <th>Win Rate</th>
-                    <th>PF</th>
+                    <th>Task</th>
+                    <th>Period</th>
                     <th>Trades</th>
+                    <th>Win Rate</th>
+                    <th>Profit Factor</th>
+                    <th>Return</th>
+                    <th>Drawdown</th>
                     <th>Created</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {runs.map((r, i) => {
-                    const ret = Number(r.total_return) || 0;
-                    const dd = Number(r.max_drawdown) || 0;
-                    return (
-                      <tr key={i}>
-                        <td style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "monospace" }}>{r.filename}</td>
-                        <td style={{ color: "var(--accent-blue)" }}>{String(r.strategy ?? "—")}</td>
-                        <td style={{ color: ret >= 0 ? "var(--accent-green)" : "var(--accent-red)", fontWeight: 600 }}>{fmtPct(r.total_return)}</td>
-                        <td style={{ color: dd < -5 ? "var(--accent-red)" : "var(--accent-yellow)" }}>{fmtPct(r.max_drawdown)}</td>
-                        <td>{fmtNum(r.sharpe_ratio)}</td>
-                        <td>{fmtPct(r.win_rate)}</td>
-                        <td style={{ fontWeight: 600 }}>{fmtNum(r.profit_factor)}</td>
-                        <td>{r.total_trades ?? "—"}</td>
-                        <td style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                          {r.created ? new Date(r.created).toLocaleDateString() : "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {!runs.length && (
-                    <tr><td colSpan={9} style={{ textAlign: "center", color: "var(--text-muted)", padding: "40px 0" }}>
-                      No backtest results found in results/ directory
-                    </td></tr>
-                  )}
+                  {history.map((row) => (
+                    <tr key={String(row.task_id ?? row.created ?? Math.random())}>
+                      <td style={{ fontFamily: "monospace", fontSize: 11, color: "var(--text-muted)" }}>{String(row.task_id ?? "—").slice(0, 12)}</td>
+                      <td>{row.start_date} → {row.end_date}</td>
+                      <td>{row.total_trades ?? "—"}</td>
+                      <td>{typeof row.win_rate === "number" ? `${(row.win_rate * 100).toFixed(1)}%` : "—"}</td>
+                      <td>{typeof row.profit_factor === "number" ? row.profit_factor.toFixed(2) : "—"}</td>
+                      <td style={{ color: Number(row.total_return_pct) >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
+                        {typeof row.total_return_pct === "number" ? formatPct(row.total_return_pct) : "—"}
+                      </td>
+                      <td>{typeof row.max_drawdown_pct === "number" ? `${row.max_drawdown_pct.toFixed(2)}%` : "—"}</td>
+                      <td style={{ color: "var(--text-secondary)" }}>
+                        {row.created_at ? new Date(String(row.created_at)).toLocaleString() : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                  {!history.length ? (
+                    <tr>
+                      <td colSpan={8} style={{ textAlign: "center", color: "var(--text-muted)", padding: "36px 0" }}>
+                        Nog geen recente runs in deze backend sessie
+                      </td>
+                    </tr>
+                  ) : null}
                 </tbody>
               </table>
             </div>
           )}
         </Card>
-
-        {/* Signal Ranking */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          <Card title="Signal Type Performance Ranking">
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {ranking.map((r, i) => (
-                <div key={i} style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "10px 12px",
-                  background: "var(--bg-secondary)",
-                  borderRadius: 8,
-                  border: "1px solid var(--border-subtle)",
-                }}>
-                  <span style={{
-                    width: 24,
-                    height: 24,
-                    borderRadius: "50%",
-                    background: i === 0 ? "#d4a843" : i === 1 ? "#94a3b8" : i === 2 ? "#cd7f32" : "var(--border)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontSize: 11,
-                    fontWeight: 700,
-                    color: i < 3 ? "#000" : "var(--text-muted)",
-                    flexShrink: 0,
-                  }}>{i + 1}</span>
-                  <div style={{ flex: 1 }}>
-                    <p style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>{r.signal_type}</p>
-                    <p style={{ fontSize: 11, color: "var(--text-muted)" }}>{r.count} trades · {r.win_rate}% WR</p>
-                  </div>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: r.total_pnl >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
-                    {r.total_pnl >= 0 ? "+" : ""}€{r.total_pnl.toFixed(0)}
-                  </span>
-                </div>
-              ))}
-              {!ranking.length && (
-                <p style={{ textAlign: "center", color: "var(--text-muted)", padding: "30px 0", fontSize: 13 }}>
-                  No signal performance data yet
-                </p>
-              )}
-            </div>
-          </Card>
-
-          {/* Raw backtest data if available */}
-          <Card title="Latest Backtest Data">
-            <pre style={{
-              fontSize: 11,
-              color: "var(--text-secondary)",
-              background: "var(--bg-secondary)",
-              borderRadius: 8,
-              padding: 12,
-              overflow: "auto",
-              maxHeight: 300,
-              fontFamily: "monospace",
-              lineHeight: 1.6,
-            }}>
-              {btData ? JSON.stringify(btData, null, 2).slice(0, 2000) : "No backtest data available.\nRun a backtest from strategy_backtest.py to populate."}
-            </pre>
-          </Card>
-        </div>
       </div>
     </AppShell>
   );

@@ -8,7 +8,7 @@ from typing import Any
 import pandas as pd
 import yfinance as yf
 
-from risk_manager import calculate_position_size
+from core.risk_manager import calculate_position_size
 
 from .models import ClosedTradeResult, ExecutionResult, SignalDecision, StrategyParameters
 from .settings import XAUUSDSettings
@@ -17,11 +17,6 @@ try:
     import MetaTrader5 as mt5
 except ImportError:  # pragma: no cover
     mt5 = None
-
-try:
-    import ccxt
-except ImportError:  # pragma: no cover
-    ccxt = None
 
 
 logger = logging.getLogger(__name__)
@@ -78,13 +73,6 @@ class DataExecutionLayer:
                 .sort_index()
             )
 
-        # CCXT: alleen relevant voor crypto paren (niet voor XAUUSD/forex via MT5)
-        if ccxt is not None and self.settings.ccxt_exchange:
-            try:
-                return self._fetch_ccxt_candles()
-            except Exception as exc:
-                logger.warning("CCXT fetch mislukt (%s), val terug op yfinance: %s", self.settings.ccxt_exchange, exc)
-
         interval = self._resolve_yfinance_interval(self.settings.timeframe)
         ticker = self._resolve_yfinance_symbol(self.settings.symbol)
         period = self._resolve_yfinance_period(self.settings.timeframe)
@@ -100,21 +88,54 @@ class DataExecutionLayer:
 
     def account_status(self) -> dict[str, Any]:
         if self.settings.mode == "paper" or mt5 is None or not self.connected:
+            positions = [
+                {
+                    "ticket": ticket,
+                    "symbol": position["symbol"],
+                    "type": position["side"],
+                    "volume": position["volume"],
+                    "price_open": position["entry_price"],
+                    "price_current": position["entry_price"],
+                    "sl": position["stop_loss"],
+                    "tp": position["take_profit"],
+                    "profit": 0.0,
+                    "time": int(position["opened_at"].timestamp()) if hasattr(position["opened_at"], "timestamp") else 0,
+                }
+                for ticket, position in self.paper_positions.items()
+            ]
             return {
                 "balance": float(self.paper_balance),
                 "equity": float(self.paper_balance),
                 "free_margin": float(self.paper_balance),
                 "open_positions": len(self.paper_positions),
+                "positions": positions,
                 "mode": self.settings.mode,
             }
         account = mt5.account_info()
         if account is None:
             raise RuntimeError("MT5 account info unavailable")
+        positions = mt5.positions_get(symbol=self.settings.symbol) or []
         return {
             "balance": float(getattr(account, "balance", 0.0)),
             "equity": float(getattr(account, "equity", 0.0)),
             "free_margin": float(getattr(account, "margin_free", 0.0)),
-            "open_positions": len(mt5.positions_get(symbol=self.settings.symbol) or []),
+            "open_positions": len(positions),
+            "positions": [
+                {
+                    "ticket": int(position.ticket),
+                    "symbol": str(position.symbol),
+                    "type": "buy" if int(position.type) == 0 else "sell",
+                    "volume": float(position.volume),
+                    "price_open": float(position.price_open),
+                    "price_current": float(position.price_current),
+                    "sl": float(position.sl),
+                    "tp": float(position.tp),
+                    "profit": float(position.profit),
+                    "time": int(position.time),
+                    "swap": float(getattr(position, "swap", 0.0)),
+                }
+                for position in positions
+            ],
             "mode": self.settings.mode,
         }
 
@@ -221,6 +242,11 @@ class DataExecutionLayer:
             return self._sync_paper_positions(latest_bar)
         return self._sync_mt5_positions(open_trades)
 
+    def close_all_positions(self, symbol: str | None = None, reason: str = "manual_close") -> list[ClosedTradeResult]:
+        if self.settings.mode == "paper" or mt5 is None or not self.connected:
+            return self._close_all_paper_positions(symbol=symbol, reason=reason)
+        return self._close_all_mt5_positions(symbol=symbol, reason=reason)
+
     def _sync_paper_positions(self, latest_bar: pd.Series | None) -> list[ClosedTradeResult]:
         if latest_bar is None:
             return []
@@ -298,6 +324,75 @@ class DataExecutionLayer:
             )
         return closed
 
+    def _close_all_paper_positions(self, symbol: str | None, reason: str) -> list[ClosedTradeResult]:
+        closed: list[ClosedTradeResult] = []
+        for ticket, position in list(self.paper_positions.items()):
+            if symbol and position["symbol"] != symbol:
+                continue
+
+            exit_price = float(position["entry_price"])
+            pnl = 0.0
+            closed.append(
+                ClosedTradeResult(
+                    broker_ticket=ticket,
+                    closed_at=datetime.utcnow(),
+                    exit_price=exit_price,
+                    pnl=pnl,
+                    status="closed",
+                    close_reason=reason,
+                    meta={"execution": "paper", "forced_close": True},
+                )
+            )
+            self.paper_positions.pop(ticket, None)
+        return closed
+
+    def _close_all_mt5_positions(self, symbol: str | None, reason: str) -> list[ClosedTradeResult]:
+        positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
+        if not positions:
+            return []
+
+        closed: list[ClosedTradeResult] = []
+        for position in positions:
+            tick = mt5.symbol_info_tick(position.symbol)
+            if tick is None:
+                raise RuntimeError(f"MT5 tick unavailable for {position.symbol}")
+
+            side_type = mt5.ORDER_TYPE_SELL if int(position.type) == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+            price = float(tick.bid if side_type == mt5.ORDER_TYPE_SELL else tick.ask)
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": position.symbol,
+                "volume": float(position.volume),
+                "type": side_type,
+                "position": int(position.ticket),
+                "price": price,
+                "deviation": self.settings.max_slippage_points,
+                "magic": self.settings.magic_number,
+                "comment": f"{self.settings.order_comment} {reason}",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            response = mt5.order_send(request)
+            if response is None:
+                raise RuntimeError(f"MT5 close order returned None: {mt5.last_error()}")
+
+            retcode = int(getattr(response, "retcode", 0))
+            if retcode != mt5.TRADE_RETCODE_DONE:
+                raise RuntimeError(f"MT5 close failed for ticket {position.ticket}, retcode={retcode}")
+
+            closed.append(
+                ClosedTradeResult(
+                    broker_ticket=str(position.ticket),
+                    closed_at=datetime.utcnow(),
+                    exit_price=price,
+                    pnl=float(getattr(position, "profit", 0.0)),
+                    status="closed",
+                    close_reason=reason,
+                    meta={"execution": "mt5", "retcode": retcode, "forced_close": True},
+                )
+            )
+        return closed
+
     def _resolve_risk_pct(self, signal: SignalDecision, parameters: StrategyParameters) -> float:
         sig_type = signal.features.get("signal_type", "")
         if isinstance(sig_type, str) and sig_type.startswith("STERK"):
@@ -370,43 +465,3 @@ class DataExecutionLayer:
         }
         return aliases.get(symbol.upper(), symbol)
 
-    def _fetch_ccxt_candles(self) -> pd.DataFrame:
-        exchange_id = self.settings.ccxt_exchange.lower()
-        exchange_class = getattr(ccxt, exchange_id)
-        params: dict = {"enableRateLimit": True}
-        if self.settings.ccxt_api_key:
-            params["apiKey"] = self.settings.ccxt_api_key
-            params["secret"] = self.settings.ccxt_api_secret
-        exchange = exchange_class(params)
-
-        ccxt_symbol = self._resolve_ccxt_symbol(self.settings.symbol)
-        ccxt_tf = self._resolve_ccxt_timeframe(self.settings.timeframe)
-        limit = min(self.settings.history_bars, 1000)
-
-        ohlcv = exchange.fetch_ohlcv(ccxt_symbol, ccxt_tf, limit=limit)
-        if not ohlcv:
-            raise RuntimeError(f"CCXT {exchange_id} returned geen data voor {ccxt_symbol}")
-
-        frame = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        frame["time"] = pd.to_datetime(frame["timestamp"], unit="ms", utc=True).dt.tz_localize(None)
-        frame = frame.set_index("time")[["open", "high", "low", "close", "volume"]].sort_index()
-        frame["spread"] = 0.0
-        logger.info("CCXT %s: %d bars geladen voor %s %s", exchange_id, len(frame), ccxt_symbol, ccxt_tf)
-        return frame
-
-    def _resolve_ccxt_symbol(self, symbol: str) -> str:
-        mapping = {
-            "XAUUSD": "XAU/USDT",
-            "EURUSD": "EUR/USDT",
-            "GBPUSD": "GBP/USDT",
-            "BTCUSD": "BTC/USDT",
-            "ETHUSD": "ETH/USDT",
-        }
-        return mapping.get(symbol.upper(), symbol.replace("USD", "/USDT"))
-
-    def _resolve_ccxt_timeframe(self, timeframe_name: str) -> str:
-        mapping = {
-            "M1": "1m", "M5": "5m", "M15": "15m", "M30": "30m",
-            "H1": "1h", "H4": "4h", "D1": "1d",
-        }
-        return mapping.get(timeframe_name, "1h")

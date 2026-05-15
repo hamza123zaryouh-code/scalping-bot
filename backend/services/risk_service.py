@@ -16,7 +16,7 @@ STATE_PATH = Path("live_logs/bot_state.json")
 
 class RiskService:
     def __init__(self) -> None:
-        from risk_manager import build_ftmo_limits
+        from core.risk_manager import build_ftmo_limits
 
         self._settings = get_settings()
         self._limits = build_ftmo_limits(

@@ -1,23 +1,13 @@
 """Smoke tests — verify the full pipeline can initialise without crashing."""
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-
-def test_config_loads():
-    from config import load_live_bot_config
-    cfg = load_live_bot_config()
-    assert cfg.symbol == "XAUUSD"
-    assert cfg.risk_per_trade > 0
-
 
 def test_risk_manager_imports():
-    from risk_manager import build_ftmo_limits
+    from core.risk_manager import build_ftmo_limits
     limits = build_ftmo_limits(160000, 8000, 16000)
     assert limits.min_allowed_equity == pytest.approx(144000)
 

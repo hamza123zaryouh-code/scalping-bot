@@ -43,3 +43,13 @@ def get_api_key(
     if expected and x_api_key != expected:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid API key")
     return x_api_key or ""
+
+
+def require_telegram_api_key(
+    x_api_key: str | None = Header(default=None),
+    settings: Settings = Depends(get_settings),
+) -> str:
+    expected = settings.telegram_api_key
+    if not expected or x_api_key != expected:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Telegram control API key")
+    return x_api_key or ""

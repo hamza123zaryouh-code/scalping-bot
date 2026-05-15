@@ -20,7 +20,6 @@ dependencies = [
     "psycopg[binary]>=3.2",
     # Market data
     "yfinance>=0.2.36",
-    "ccxt>=4.3",
     "MetaTrader5>=5.0; platform_system == 'Windows'",
     # Charting
     "matplotlib>=3.8",
@@ -42,9 +41,7 @@ dependencies = [
     # Dashboard
     "streamlit>=1.35",
     "streamlit-extras>=0.4",
-    # PDF reports
-    "reportlab>=4.2",
-    "fpdf2>=2.7",
+    # Image processing
     "Pillow>=10.3",
     # Telegram
     "requests>=2.32",
@@ -71,7 +68,6 @@ mt5 = ["MetaTrader5>=5.0"]
 
 [project.scripts]
 xauusd-api    = "backend.main:serve"
-xauusd-dash   = "frontend.app:run"
 xauusd-watch  = "monitoring.watchdog:main"
 xauusd-autonomous = "autonomous_xauusd.main:main"
 xauusd-auto-dash = "autonomous_xauusd.dashboard_layer:main"
@@ -95,4 +91,4 @@ ignore_missing_imports = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["autonomous_xauusd*", "backend*", "frontend*", "monitoring*"]
+include = ["autonomous_xauusd*", "backend*", "core*", "monitoring*"]

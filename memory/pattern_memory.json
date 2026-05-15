@@ -1,0 +1,26 @@
+{
+  "patterns": [
+    {
+      "key": "A_EMACROSS|buy|bull|neutral|neutral|LONDON",
+      "signal_type": "A_EMACROSS",
+      "direction": "buy",
+      "h4_regime": "bull",
+      "d1_trend": "neutral",
+      "rsi_bucket": "neutral",
+      "session": "LONDON",
+      "trades": 1,
+      "wins": 1,
+      "total_pnl": 150.0,
+      "win_rate": 1.0,
+      "avg_pnl": 150.0,
+      "avg_rr": 2.5,
+      "quality_score": 0.0,
+      "risk_multiplier": 0.85,
+      "is_blocked": false,
+      "is_boosted": false,
+      "last_trade_at": "2026-05-15T10:33:40.313761+00:00"
+    }
+  ],
+  "saved_at": "2026-05-15T10:33:40.313761+00:00",
+  "total": 1
+}

@@ -39,11 +39,12 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Trading artefacts (large — tracked in exports/ only)
+# Trading artefacts — generated outputs, not source
 *.pkl
 *.h5
-results/backtest_*.csv
-results/backtest_*.png
+results/
+reports/*.md
+reports/*.csv
 
 # Logs (track folder structure, not log content)
 logs/*.log
@@ -51,8 +52,21 @@ live_logs/*.log
 live_logs/bot_state.json
 live_logs/
 exports/latest/
+
+# Codex / Claude workspace logs
+.codex-logs/
+
+# Python cache
 __pycache__/
 *.pyc
+
+# Coverage & build artifacts
+coverage.xml
+.coverage
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Node.js dependencies (large — exclude node_modules)
 node_modules/
