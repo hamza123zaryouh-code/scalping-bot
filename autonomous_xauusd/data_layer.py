@@ -394,7 +394,13 @@ class DataExecutionLayer:
         return closed
 
     def _resolve_risk_pct(self, signal: SignalDecision, parameters: StrategyParameters) -> float:
-        sig_type = signal.features.get("signal_type", "")
+        # Gebruik V18 risk_pct uit signaal indien beschikbaar (gezet door strategy_engine/brain_layer)
+        if isinstance(signal.features, dict):
+            v18_risk = signal.features.get("risk_pct")
+            if v18_risk and float(v18_risk) > 0:
+                return float(v18_risk)
+        # Fallback op settings-based risico
+        sig_type = signal.features.get("signal_type", "") if isinstance(signal.features, dict) else ""
         if isinstance(sig_type, str) and sig_type.startswith("STERK"):
             return parameters.risk_strong_regime
         if isinstance(sig_type, str) and sig_type.startswith("ZWAK"):
@@ -404,14 +410,18 @@ class DataExecutionLayer:
     def _calculate_volume(self, equity: float, signal: SignalDecision, parameters: StrategyParameters) -> float:
         stop_distance = abs(signal.entry_price - signal.stop_loss)
         risk_pct = self._resolve_risk_pct(signal, parameters)
+        max_lot = float(os.getenv("MAX_LOT_SIZE", "6.0"))
+
         if mt5 is not None and self.connected:
             symbol_info = mt5.symbol_info(signal.symbol)
             if symbol_info is not None:
-                return float(calculate_position_size(equity, risk_pct, stop_distance, symbol_info))
+                raw = float(calculate_position_size(equity, risk_pct, stop_distance, symbol_info))
+                return round(min(max(raw, 0.01), max_lot), 2)
         risk_amount = max(equity * risk_pct, 0.0)
         if stop_distance <= 0:
             return 0.0
-        return round(max(risk_amount / stop_distance, 0.01), 2)
+        raw = risk_amount / stop_distance
+        return round(min(max(raw, 0.01), max_lot), 2)
 
     def _resolve_mt5_timeframe(self, timeframe_name: str) -> int:
         if mt5 is None:

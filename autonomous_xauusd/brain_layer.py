@@ -185,6 +185,7 @@ class IntelligenceLayer:
         timeframe: str,
         sentiment: SentimentScore | None = None,
         sentiment_threshold: float = 0.5,
+        is_killzone: bool = False,
     ) -> SignalDecision | None:
         """
         Genereert een handelssignaal via de core StrategyEngine.
@@ -204,17 +205,20 @@ class IntelligenceLayer:
             sent_label = str(sentiment.label)
 
         # Strategie configuratie uit parameters
+        # adx_min (15) voor H1 apart van h4adx_min (18) — was eerder beiden h4_adx_weak
         cfg = {
             "risk_a": float(parameters.risk_strong_regime),
             "risk_b": float(parameters.risk_weak_regime) * 1.2,
             "risk_c": float(parameters.risk_weak_regime),
-            "adx_min": float(parameters.h4_adx_weak),
-            "h4adx_min": float(parameters.h4_adx_weak),
+            "adx_min": 15.0,                                      # H1 ADX min — lager dan h4
+            "h4adx_min": float(parameters.h4_adx_weak),           # H4 ADX min (18)
             "tp1_r": float(parameters.take_profit_atr) * 0.5,
             "tp2_r": float(parameters.take_profit_atr),
-            "tp3_r": float(parameters.take_profit_atr) * 1.5,
+            "tp3_r": float(parameters.take_profit_atr) * 1.5,    # Originele waarde
             "sl_atr": float(parameters.stop_loss_atr),
             "trailing": True,
+            "breakeven_r": 0.8,
+            "kz_mult": 1.25,
         }
 
         # ML confidence score berekenen
@@ -227,6 +231,7 @@ class IntelligenceLayer:
             sentiment_score=sent_score,
             sentiment_label=sent_label,
             ml_confidence=ml_conf,
+            is_killzone=is_killzone,
         )
 
         if signal is None:

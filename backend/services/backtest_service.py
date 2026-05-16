@@ -28,7 +28,7 @@ import pandas as pd
 
 from backend.api.schemas.backtest import BacktestMetrics, BacktestRequest, BacktestResult, TradeRecord, WeeklySummary
 from backend.api.schemas.common import TaskStatus
-from core.strategy_engine import StrategyEngine, DEFAULT_CFG
+from core.strategy_engine import StrategyEngine, DEFAULT_CFG, V18_CFG
 
 logger = logging.getLogger(__name__)
 
@@ -326,14 +326,15 @@ class BacktestService:
     # BACKTEST ENGINE (V16 logica — identiek aan strategy_v16.py)
     # ─────────────────────────────────────────────────────────────
 
-    def _build_cfg(self, req: BacktestRequest) -> dict:
+    def _build_cfg(self, req: BacktestRequest, use_v18: bool = False) -> dict:
         """Bouw strategie config vanuit BacktestRequest."""
-        base = dict(DEFAULT_CFG)
+        base = dict(V18_CFG if use_v18 else DEFAULT_CFG)
 
         # Override met request parameters indien opgegeven
         params = getattr(req, "strategy_params", None) or {}
         if isinstance(params, dict):
-            for key in DEFAULT_CFG:
+            source = V18_CFG if use_v18 else DEFAULT_CFG
+            for key in source:
                 if key in params:
                     base[key] = params[key]
 
@@ -344,6 +345,8 @@ class BacktestService:
         df: pd.DataFrame,
         cfg: dict,
         starting_capital: float,
+        ftmo_floor_pct: float = FTMO_DD_PCT,
+        ftmo_balance_based: bool = False,
     ) -> tuple[list[dict], float]:
         """
         V16 backtest engine — exact dezelfde logica als strategy_v16.py.
@@ -356,8 +359,14 @@ class BacktestService:
         sl_dag_max = cfg.get("sl_dag_max", 2)
         cool_h = cfg.get("cooldown_h", 2)
         trail_on = cfg.get("trailing", True)
+        weekly_compound = cfg.get("weekly_compound", False)
+        compound_boost = cfg.get("compound_boost", 1.10)
+        max_lot_size = float(cfg.get("max_lot_size", 9999.0))  # FTMO lot cap
         ftmo_dag_eur = starting_capital * 0.0125  # 1.25% per dag
-        ftmo_tot_eur = starting_capital * FTMO_DD_PCT
+        # balance_based: max verlies t.o.v. startkapitaal (echte FTMO-regel)
+        # peak_based: max verlies t.o.v. equity-piek (conservatief, default)
+        ftmo_tot_eur = starting_capital * ftmo_floor_pct
+        ftmo_floor_eur = starting_capital * (1.0 - ftmo_floor_pct)  # voor balance_based
 
         kap = float(starting_capital)
         piek = kap
@@ -371,6 +380,12 @@ class BacktestService:
         tp1_hit = tp2_hit = False
         last_i = -999
         cum_equity = kap
+        _open_lot_size = 0.01
+
+        # Weekly compound tracking
+        _week_start_equity = kap
+        _current_week: Optional[int] = None
+        _compound_multiplier = 1.0
 
         for i in range(120, len(df)):
             b = df.iloc[i]
@@ -381,14 +396,34 @@ class BacktestService:
             if bar_date not in dag:
                 dag[bar_date] = {"loss": 0.0, "n": 0, "sl": 0}
 
-            dd_eur = piek - kap
-            if dd_eur >= ftmo_tot_eur:
+            # Weekly compound boost: na elke winstgevende week → multiplier omhoog
+            if weekly_compound:
+                bar_week = b.name.isocalendar()[1]
+                if _current_week is None:
+                    _current_week = bar_week
+                    _week_start_equity = kap
+                elif bar_week != _current_week:
+                    # Nieuwe week begint
+                    if kap > _week_start_equity:
+                        _compound_multiplier = min(_compound_multiplier * compound_boost, 1.50)
+                    else:
+                        _compound_multiplier = max(_compound_multiplier * 0.95, 1.0)
+                    _current_week = bar_week
+                    _week_start_equity = kap
+
+            # FTMO stop check
+            if ftmo_balance_based:
+                ftmo_breached = kap < ftmo_floor_eur  # equity < startkapitaal * (1 - ftmo_floor_pct)
+            else:
+                dd_eur = piek - kap
+                ftmo_breached = dd_eur >= ftmo_tot_eur
+            if ftmo_breached:
                 if ip:
                     ep = float(b["close"])
                     pnl = richting * (ep - entry) / max(abs(entry - sl), 0.001) * risk_rem
                     kap += pnl
                     cum_equity = kap
-                    trs.append(self._make_tr(ot, b.name, richting, entry, ep, pnl, "FAIL", sig_type, sl, tp1, cum_equity))
+                    trs.append(self._make_tr(ot, b.name, richting, entry, ep, pnl, "FAIL", sig_type, sl, tp1, cum_equity, _open_lot_size))
                     ip = False
                 break
 
@@ -427,7 +462,7 @@ class BacktestService:
                             kap += pnl_tp1
                             if kap > piek: piek = kap
                             cum_equity = kap
-                            trs.append(self._make_tr(ot, b.name, richting, entry, tp1, pnl_tp1, "TP1", sig_type, sl, tp1, cum_equity))
+                            trs.append(self._make_tr(ot, b.name, richting, entry, tp1, pnl_tp1, "TP1", sig_type, sl, tp1, cum_equity, _open_lot_size))
                             risk_rem *= (1.0 - tp1_pct)
                             tp1_hit = True
 
@@ -439,7 +474,7 @@ class BacktestService:
                         kap += pnl_tp2
                         if kap > piek: piek = kap
                         cum_equity = kap
-                        trs.append(self._make_tr(ot, b.name, richting, entry, tp2, pnl_tp2, "TP2", sig_type, sl, tp2, cum_equity))
+                        trs.append(self._make_tr(ot, b.name, richting, entry, tp2, pnl_tp2, "TP2", sig_type, sl, tp2, cum_equity, _open_lot_size))
                         risk_rem *= (1.0 - tp2_frac)
                         tp2_hit = True
 
@@ -450,7 +485,7 @@ class BacktestService:
                         kap += pnl_tp3
                         if kap > piek: piek = kap
                         cum_equity = kap
-                        trs.append(self._make_tr(ot, b.name, richting, entry, tp3, pnl_tp3, "TP3", sig_type, sl, tp3, cum_equity))
+                        trs.append(self._make_tr(ot, b.name, richting, entry, tp3, pnl_tp3, "TP3", sig_type, sl, tp3, cum_equity, _open_lot_size))
                         ip = False
                         continue
 
@@ -467,7 +502,7 @@ class BacktestService:
                     kap += pnl_sl
                     if kap > piek: piek = kap
                     cum_equity = kap
-                    trs.append(self._make_tr(ot, b.name, richting, entry, sl, pnl_sl, "SL", sig_type, sl, tp1, cum_equity))
+                    trs.append(self._make_tr(ot, b.name, richting, entry, sl, pnl_sl, "SL", sig_type, sl, tp1, cum_equity, _open_lot_size))
                     ip = False
 
             if ip:
@@ -518,7 +553,7 @@ class BacktestService:
             sl_dist = abs(cl_pr - sl)
             if sl_dist <= 0: continue
 
-            risk_usd = kap * risk_pct
+            risk_usd = kap * risk_pct * _compound_multiplier
             risk_rem = risk_usd
             entry = cl_pr
             ot = b.name
@@ -527,6 +562,17 @@ class BacktestService:
             last_i = i
             dag[bar_date]["n"] += 1
 
+            # Echte lotsize berekening — zelfde formule als live MT5 bot
+            # XAUUSD: 1 lot = 100 oz, P&L = lot × 100 × ΔP (in USD)
+            # risk_eur → risk_usd via EUR/USD ≈ 1.10
+            _EUR_USD = 1.10
+            _risk_usd_mt5 = risk_usd * _EUR_USD
+            _raw_lot = _risk_usd_mt5 / (sl_dist * 100)
+            _open_lot_size = round(max(min(_raw_lot, max_lot_size), 0.01), 2)
+            # Als lot cap aanslaat: risk_rem aanpassen zodat P&L realistisch is
+            if _raw_lot > max_lot_size:
+                risk_rem = (_open_lot_size * sl_dist * 100) / _EUR_USD
+
         # Sluit open positie
         if ip and len(df) > 0:
             ep = float(df.iloc[-1]["close"])
@@ -534,19 +580,19 @@ class BacktestService:
             pnl = risk_rem * ((ep - entry) / max(sl_dist, 0.001) * richting)
             kap += pnl
             cum_equity = kap
-            trs.append(self._make_tr(ot, df.index[-1], richting, entry, ep, pnl, "OPEN", sig_type, sl, tp1, cum_equity))
+            trs.append(self._make_tr(ot, df.index[-1], richting, entry, ep, pnl, "OPEN", sig_type, sl, tp1, cum_equity, _open_lot_size))
 
         return trs, kap
 
     @staticmethod
-    def _make_tr(ti, to, rich, entry, exit_p, pnl, result, stype, sl=0, tp1=0, cum_equity=0) -> dict:
+    def _make_tr(ti, to, rich, entry, exit_p, pnl, result, stype, sl=0, tp1=0, cum_equity=0, lot_size=0.01) -> dict:
         return {
             "in": str(ti), "uit": str(to), "rich": rich,
             "entry": round(float(entry), 2), "exit": round(float(exit_p), 2),
             "sl": round(float(sl), 2), "tp1": round(float(tp1), 2),
             "pnl": round(float(pnl), 2), "result": result, "type": stype,
             "cum_equity": round(float(cum_equity), 2),
-            "lot_size": 0.01,
+            "lot_size": round(float(lot_size), 2),
         }
 
     # ─────────────────────────────────────────────────────────────

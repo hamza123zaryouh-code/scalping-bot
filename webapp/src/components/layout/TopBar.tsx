@@ -2,7 +2,7 @@
 import { usePathname } from "next/navigation";
 import { LiveBadge, ModeBadge } from "../ui/Badge";
 import { useWebSocket } from "../../lib/hooks/useWebSocket";
-import { useState } from "react";
+import { useState, useCallback } from "react";
 
 const PAGE_TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
@@ -25,11 +25,11 @@ export function TopBar({ mode = "paper", lastUpdate }: TopBarProps) {
   const title = PAGE_TITLES[pathname] ?? "Dashboard";
   const [wsAlive, setWsAlive] = useState(false);
 
-  const { connected } = useWebSocket({
-    onMessage: (msg) => {
-      if (msg.type === "pong" || msg.type === "connection.accepted") setWsAlive(true);
-    },
-  });
+  const handleMessage = useCallback((msg: { type: string }) => {
+    if (msg.type === "pong" || msg.type === "connection.accepted") setWsAlive(true);
+  }, []);
+
+  const { connected } = useWebSocket({ onMessage: handleMessage });
 
   const now = lastUpdate ? new Date(lastUpdate).toLocaleTimeString() : new Date().toLocaleTimeString();
 

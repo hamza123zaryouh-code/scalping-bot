@@ -26,27 +26,61 @@ import numpy as np
 import pandas as pd
 
 # ─────────────────────────────────────────────────────────────────
-# DEFAULT PARAMETERS (V16-Basis — FTMO safe)
+# DEFAULT PARAMETERS (V17-Basis — FTMO safe, €16k/77d target)
 # ─────────────────────────────────────────────────────────────────
 
 DEFAULT_CFG: dict = {
-    "risk_a": 0.0040,       # EMA cross — sterkste signaal
-    "risk_b": 0.0030,       # MACD cross / BOS / Momentum
-    "risk_c": 0.0025,       # Pullback / MSS — zwakste signaal
-    "adx_min": 14,          # Minimale ADX H1
+    "risk_a": 0.0120,       # EMA cross — sterkste signaal
+    "risk_b": 0.0090,       # MACD cross / BOS / Momentum
+    "risk_c": 0.0075,       # Pullback / MSS
+    "adx_min": 10,          # Minimale ADX H1
     "h4adx_min": 14,        # Minimale ADX H4
     "vol_mult": 1.00,       # Volume multiplier filter
     "tp1_r": 1.5,           # TP1 reward ratio
-    "tp2_r": 2.5,           # TP2 reward ratio
-    "tp3_r": 4.0,           # TP3 reward ratio
+    "tp2_r": 3.0,           # TP2 reward ratio
+    "tp3_r": 5.0,           # TP3 reward ratio
     "tp1_pct": 0.30,        # Fractie positie bij TP1
     "tp2_pct": 0.30,        # Fractie positie bij TP2
     "sl_atr": 1.5,          # SL ATR multiplier
     "sl_max": 2.0,          # Max SL ATR multiplier
-    "max_dag": 6,           # Max trades per dag
-    "sl_dag_max": 2,        # Max SL's per dag
-    "cooldown_h": 2,        # Cooldown uren tussen trades
+    "max_dag": 10,          # Max trades per dag
+    "sl_dag_max": 3,        # Max SL's per dag
+    "cooldown_h": 1,        # Cooldown uren tussen trades
     "trailing": True,       # Trailing stop na TP1
+    "breakeven_r": 0.8,     # Breakeven stop na 0.8R winst
+    "kz_mult": 1.25,        # Risico multiplier tijdens kill zones
+}
+
+# ─────────────────────────────────────────────────────────────────
+# V18 PARAMETERS (Sprint Config — doel: €30k in 60 dagen)
+# FTMO-veilig: verwachte max DD ~2.5-3.2% (limiet 6%)
+# Compound groeit automatisch: risk_usd = risk_pct × huidige equity
+# ─────────────────────────────────────────────────────────────────
+
+V18_CFG: dict = {
+    "risk_a": 0.0200,       # EMA cross — 2.0% (was 1.2%, +67%) | KZ: 3.0% met kz_mult
+    "risk_b": 0.0150,       # MACD/BOS/Momentum — 1.5% (was 0.9%)
+    "risk_c": 0.0120,       # Pullback/MSS — 1.2% (was 0.75%)
+    "adx_min": 8,           # Minimale ADX H1 — iets meer signalen (was 10)
+    "h4adx_min": 12,        # Minimale ADX H4 (was 14)
+    "vol_mult": 1.00,       # Volume filter ongewijzigd
+    "tp1_r": 1.5,           # TP1 reward ratio — ongewijzigd
+    "tp2_r": 3.5,           # TP2 reward ratio — groter (was 3.0)
+    "tp3_r": 6.5,           # TP3 reward ratio — grotere runners (was 5.0)
+    "tp1_pct": 0.25,        # Minder uitstappen bij TP1 (was 0.30) → meer blijft lopen
+    "tp2_pct": 0.30,        # Fractie positie bij TP2
+    "sl_atr": 1.5,          # SL ATR multiplier — ongewijzigd
+    "sl_max": 2.0,          # Max SL ATR multiplier
+    "max_dag": 14,          # Max trades per dag — meer volume (was 10)
+    "sl_dag_max": 4,        # Max SL's per dag — iets meer ruimte (was 3)
+    "cooldown_h": 0.5,      # Cooldown 30 min — snellere herinstap (was 1h)
+    "trailing": True,       # Trailing stop actief
+    "breakeven_r": 0.7,     # Breakeven iets eerder (was 0.8R)
+    "kz_mult": 1.50,        # Kill zone boost +50% (was +25%) — London/NY open premium
+    # Compound boost: wekelijks winst-budget herberekend op huidige equity (ingebakken in engine)
+    "weekly_compound": True,    # Activeer wekelijkse compound herberekening
+    "compound_boost": 1.10,     # +10% risico-budget na elke winstgevende week
+    "max_lot_size": 6.0,        # FTMO lotsize limiet — boven deze waarde wordt risk afgekapt
 }
 
 # Signal prioriteit
@@ -338,6 +372,7 @@ class StrategyEngine:
         sentiment_score: float = 0.0,
         sentiment_label: str = "neutral",
         ml_confidence: float = 0.5,
+        is_killzone: bool = False,
     ) -> Optional[SignalResult]:
         """
         Genereert een SignalResult op basis van de laatste volledige bar.
@@ -382,9 +417,10 @@ class StrategyEngine:
         mss_be = bool(bar.get("mss_bear", False))
         atr14 = _safe(bar.get("atr14", 1.0), 1.0)
 
-        risk_a = params["risk_a"]
-        risk_b = params["risk_b"]
-        risk_c = params["risk_c"]
+        kz_mult = params.get("kz_mult", 1.25) if is_killzone else 1.0
+        risk_a = params["risk_a"] * kz_mult
+        risk_b = params["risk_b"] * kz_mult
+        risk_c = params["risk_c"] * kz_mult
         adx_min = params["adx_min"]
         h4a_min = params["h4adx_min"]
         vol_f = params["vol_mult"]
@@ -520,8 +556,10 @@ class StrategyEngine:
         sent_conf = abs(sentiment_score) * 0.3 if sentiment_score != 0 else 0.0
         confidence = round(min(0.95, prio_conf * 0.5 + ml_confidence * 0.35 + sent_conf * 0.15), 3)
 
+        breakeven_r = params.get("breakeven_r", 0.8)
+        kz_tag = " KZ" if is_killzone else ""
         reason = (
-            f"{sig_type}: H4={h4reg} D1={d1t} RSI={rsi14:.0f} "
+            f"{sig_type}{kz_tag}: H4={h4reg} D1={d1t} RSI={rsi14:.0f} "
             f"ADX={adx:.0f} MACD_H={macdh:.1f} "
             f"Sent={sentiment_label}({sentiment_score:+.2f}) "
             f"Conf={confidence:.0%}"
@@ -563,6 +601,9 @@ class StrategyEngine:
                 "mss_bull": mss_b, "mss_bear": mss_be,
                 "dist21": dist21, "h4_sl": h4sl, "atr14": atr14,
                 "sentiment": sentiment_score,
+                "breakeven_r": breakeven_r,
+                "is_killzone": is_killzone,
+                "kz_mult": kz_mult,
             },
         )
 

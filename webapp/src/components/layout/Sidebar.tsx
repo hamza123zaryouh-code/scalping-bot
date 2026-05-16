@@ -6,12 +6,6 @@ const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: "⬡", group: "main" },
   { href: "/trading", label: "Live Trading", icon: "◈", group: "main" },
   { href: "/backtest", label: "Backtest Center", icon: "⊡", group: "main" },
-  { href: "/dashboard/sentiment", label: "Sentiment", icon: "◑", group: "intel" },
-  { href: "/dashboard/regimes", label: "Regimes", icon: "◒", group: "intel" },
-  { href: "/dashboard/ml", label: "ML Dashboard", icon: "◎", group: "intel" },
-  { href: "/dashboard/patterns", label: "Patterns", icon: "◆", group: "intel" },
-  { href: "/ai-memory", label: "AI Memory", icon: "◉", group: "intel" },
-  { href: "/dashboard/execution", label: "Execution", icon: "◫", group: "risk" },
   { href: "/dashboard/risk", label: "FTMO Risk", icon: "◬", group: "risk" },
   { href: "/risk", label: "Risk Control", icon: "⊛", group: "risk" },
   { href: "/optimizer", label: "Optimizer", icon: "⊕", group: "tools" },
@@ -21,7 +15,6 @@ const NAV_ITEMS = [
 
 const GROUP_LABELS: Record<string, string> = {
   main: "Live System",
-  intel: "Intelligence",
   risk: "Risk & Execution",
   tools: "Tools",
 };

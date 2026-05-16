@@ -1,4 +1,5 @@
 @echo off
-REM Run the full test suite
-call .venv\Scripts\activate.bat 2>NUL
-pytest tests\ -v --cov=backend --cov=. --cov-report=term-missing
+REM Run alle unit, smoke en regression tests (snel, geen lange integratietests)
+cd /d %~dp0..
+python -m pytest tests/unit/ tests/smoke/ tests/regression/ --tb=short -q
+pause

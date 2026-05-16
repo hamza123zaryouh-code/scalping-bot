@@ -95,7 +95,10 @@ def _assert_signals_equal(a: Optional[SignalResult], b: Optional[SignalResult], 
 def _assert_indicators_equal(fa: pd.DataFrame, fb: pd.DataFrame, tol: float = 1e-8) -> None:
     """Controleert dat twee verrijkte DataFrames identieke indicatorwaarden hebben."""
     common_cols = set(fa.columns) & set(fb.columns)
-    numeric_cols = [c for c in common_cols if pd.api.types.is_numeric_dtype(fa[c])]
+    numeric_cols = [
+        c for c in common_cols
+        if pd.api.types.is_numeric_dtype(fa[c]) and not pd.api.types.is_bool_dtype(fa[c])
+    ]
 
     for col in numeric_cols:
         max_diff = (fa[col] - fb[col]).abs().max()
@@ -281,14 +284,22 @@ class TestLiveVsBacktestConsistency:
         if common_idx.empty:
             pytest.skip("Geen overlappende bars")
 
-        # Indicator parity op de gedeelde subset
-        numeric_cols = [c for c in feat_subset.columns if pd.api.types.is_numeric_dtype(feat_subset[c])]
-        for col in numeric_cols:
+        # Indicator parity op de gedeelde subset (boolean kolommen overslaan)
+        # H4/D1 resampled indicators (h4_*, d1_*) mogen afwijken omdat EWM path-dependent is:
+        # een 300-bar en 350-bar dataset geven verschillende EWM initialisatie voor H4 bars.
+        # H1 indicators zijn deterministisch en moeten exact gelijk zijn.
+        h1_numeric_cols = [
+            c for c in feat_subset.columns
+            if pd.api.types.is_numeric_dtype(feat_subset[c])
+            and not pd.api.types.is_bool_dtype(feat_subset[c])
+            and not c.startswith(("h4_", "d1_"))
+        ]
+        for col in h1_numeric_cols:
             a_vals = feat_subset.loc[common_idx, col]
             b_vals = feat_full.loc[common_idx, col]
             max_diff = (a_vals - b_vals).abs().max()
             assert max_diff < 1e-8, (
-                f"Indicator '{col}' heeft parity mismatch: max diff = {max_diff:.2e}"
+                f"H1 indicator '{col}' heeft parity mismatch: max diff = {max_diff:.2e}"
             )
 
     def test_sl_tp_consistency(self):

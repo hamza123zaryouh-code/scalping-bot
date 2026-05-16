@@ -182,6 +182,7 @@ class AutonomousTradingSystem:
                 self.memory.log_trade_close(closed_trade)
                 self.circuit_breaker.record_trade_result(closed_trade.pnl)
                 self._ftmo_guard.record_trade_closed(closed_trade.pnl)
+                self.telegram.notify(self._format_trade_close_message(closed_trade))
 
             account = self.engine.account_status()
             self.circuit_breaker.update_balance(
@@ -269,6 +270,7 @@ class AutonomousTradingSystem:
                     self.settings.timeframe,
                     sentiment=current_sentiment,
                     sentiment_threshold=self.settings.sentiment_filter_threshold,
+                    is_killzone=session_info.is_killzone,
                 )
                 if signal:
                     self._record_signal(signal)
@@ -293,14 +295,9 @@ class AutonomousTradingSystem:
                     session=session_info.session.value,
                 )
                 self.memory.log_trade_open(execution, sentiment_score=current_sentiment.score)
-                self.telegram.notify(
-                    f"Trade geopend: {execution.side.upper()} {execution.symbol} @ {execution.entry_price:.2f}\n"
-                    f"SL: {execution.stop_loss:.2f} | TP: {execution.take_profit:.2f}\n"
-                    f"Sessie: {session_info.session.value.upper()}\n"
-                    f"Sentiment: {sentiment_result.label} ({sentiment_result.score:+.2f})\n"
-                    f"Risk mult: {risk_mult:.0%} | Macro: {sentiment_result.macro_event_level}\n"
-                    f"Mode: {execution.mode}"
-                )
+                self.telegram.notify(self._format_trade_open_message(
+                    execution, signal, session_info, sentiment_result, risk_mult, sig_type,
+                ))
 
             self._write_bot_state(account, session_info, sentiment_result, signal)
             training = self._maybe_train()
@@ -481,6 +478,74 @@ class AutonomousTradingSystem:
                 return "AI training overgeslagen: onvoldoende gesloten trades."
             return f"AI training voltooid. Accuracy={outcome.accuracy:.2%}, samples={outcome.sample_count}."
         raise ValueError(f"Unsupported control command: {action}")
+
+    def _format_trade_open_message(self, execution, signal, session_info, sentiment_result, risk_mult: float, sig_type: str) -> str:
+        direction_emoji = "🟢 LONG" if execution.side.lower() == "buy" else "🔴 SHORT"
+        sl_pts = abs(execution.entry_price - execution.stop_loss)
+        tp_pts = abs(execution.take_profit - execution.entry_price)
+        rr = tp_pts / sl_pts if sl_pts > 0 else 0.0
+        regime = execution.market_regime or "unknown"
+        features = execution.features if isinstance(execution.features, dict) else {}
+        confidence = features.get("confidence", features.get("ml_confidence", 0.0))
+        pat_mult = self._pattern_memory.get_risk_multiplier(
+            sig_type, execution.side,
+            h4_regime=regime,
+            session=session_info.session.value,
+        )
+        ftmo = self._ftmo_guard.get_status_dict()
+        daily_remaining = ftmo.get("daily_remaining", ftmo.get("daily_loss_limit", 8000))
+        total_remaining = ftmo.get("total_dd_limit", 16000) - ftmo.get("total_drawdown", 0)
+
+        lines = [
+            f"{direction_emoji} TRADE GEOPEND — {execution.symbol}",
+            f"",
+            f"Signaal:    {sig_type}",
+            f"Entry:      {execution.entry_price:.2f}",
+            f"Stop Loss:  {execution.stop_loss:.2f}  ({sl_pts:.1f} pts)",
+            f"Take Profit:{execution.take_profit:.2f}  ({tp_pts:.1f} pts)",
+            f"R:R ratio:  1:{rr:.1f}",
+            f"Lot size:   {execution.volume:.2f}",
+            f"",
+            f"Sessie:     {session_info.session.value.upper()}",
+            f"Regime:     {regime}",
+            f"Sentiment:  {sentiment_result.label} ({sentiment_result.score:+.2f})",
+        ]
+        if confidence:
+            lines.append(f"ML conf:    {float(confidence):.1%}")
+        lines += [
+            f"Risk mult:  CB={risk_mult:.0%}  PAT={pat_mult:.0%}",
+            f"",
+            f"FTMO ruimte:",
+            f"  Dag:      €{daily_remaining:,.0f} resterend",
+            f"  Totaal:   €{total_remaining:,.0f} resterend",
+            f"",
+            f"Mode: {execution.mode.upper()}  |  Ticket: {execution.broker_ticket}",
+        ]
+        return "\n".join(lines)
+
+    def _format_trade_close_message(self, closed_trade) -> str:
+        won = closed_trade.pnl >= 0
+        result_emoji = "✅ WIN" if won else "❌ VERLIES"
+        reason_map = {"tp": "TP geraakt", "sl": "SL geraakt", "manual": "Manueel", "telegram_close_all": "Emergency close"}
+        reason_label = reason_map.get(closed_trade.close_reason.lower(), closed_trade.close_reason)
+        ftmo = self._ftmo_guard.get_status_dict()
+        daily_used = ftmo.get("daily_loss_used", 0)
+        daily_limit = ftmo.get("daily_loss_limit", 8000)
+        total_dd = ftmo.get("total_drawdown", 0)
+        daily_pct = (daily_used / daily_limit * 100) if daily_limit else 0
+
+        lines = [
+            f"{result_emoji} — XAUUSD trade gesloten",
+            f"",
+            f"Exit:       {closed_trade.exit_price:.2f}",
+            f"PnL:        €{closed_trade.pnl:+,.2f}",
+            f"Reden:      {reason_label}",
+            f"",
+            f"FTMO na trade:",
+            f"  Dag verlies:  €{daily_used:,.0f} / €{daily_limit:,.0f}  ({daily_pct:.1f}%)",
+            f"  Totaal DD:    €{total_dd:,.0f}",
+        ]
+        return "\n".join(lines)
 
     def _record_signal(self, signal) -> None:
         payload = {

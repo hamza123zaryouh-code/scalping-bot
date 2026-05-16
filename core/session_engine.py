@@ -175,14 +175,14 @@ class SessionEngine:
                 killzone=kz,
             )
 
-        # Overlap London/NY
+        # Overlap London/NY — hoogste volume periode voor goud
         if self.OVERLAP_START <= hour < self.OVERLAP_END:
             kz = self._get_killzone(hour, minute)
             return self._make_session(
-                SessionType.OVERLAP, SessionQuality.STANDARD,
+                SessionType.OVERLAP, SessionQuality.PREMIUM,
                 hour, minute, dow, is_dst,
                 f"London/NY Overlap{' — ' + kz + ' Killzone' if kz else ''}",
-                valid=True, all_signals=False,  # alleen A/B in overlap
+                valid=True, all_signals=True,  # beste sessie voor XAUUSD
                 killzone=kz,
             )
 

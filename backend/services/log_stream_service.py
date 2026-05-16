@@ -101,11 +101,13 @@ class WebSocketLogHandler(logging.Handler):
 
             if self._broadcast_cb is not None:
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        loop.call_soon_threadsafe(
-                            lambda: asyncio.ensure_future(self._broadcast_cb(log_entry))
-                        )
+                    loop = asyncio.get_running_loop()
+                    cb = self._broadcast_cb
+                    loop.call_soon_threadsafe(
+                        lambda e=log_entry: asyncio.ensure_future(cb(e))
+                    )
+                except RuntimeError:
+                    pass  # No running event loop in this thread
                 except Exception:
                     pass
         except Exception:
