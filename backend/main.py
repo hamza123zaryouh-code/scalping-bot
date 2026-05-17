@@ -77,6 +77,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    log_svc._handler.set_broadcast_callback(None)
     await stream_svc.stop()
     await ws_manager.stop_broadcaster()
     logger.info("XAUUSD Trading Platform API shutting down")

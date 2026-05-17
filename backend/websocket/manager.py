@@ -74,6 +74,7 @@ class ConnectionManager:
         self._lock = asyncio.Lock()
         self._event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=500)
         self._broadcaster_task: asyncio.Task | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def connect(self, ws: WebSocket, *, user_id: str, role: str) -> LiveConnection:
         await ws.accept()
@@ -149,6 +150,15 @@ class ConnectionManager:
 
     async def start_broadcaster(self) -> None:
         """Start the async event broadcaster. Call once from app lifespan."""
+        current_loop = asyncio.get_running_loop()
+        if self._loop is not current_loop:
+            self._loop = current_loop
+            self._lock = asyncio.Lock()
+            self._event_queue = asyncio.Queue(maxsize=500)
+            self._active = []
+
+        if self._broadcaster_task is not None and not self._broadcaster_task.done():
+            return
         self._broadcaster_task = asyncio.create_task(self._broadcast_loop())
         logger.info("WebSocket event broadcaster started")
 
@@ -159,6 +169,14 @@ class ConnectionManager:
                 await self._broadcaster_task
             except asyncio.CancelledError:
                 pass
+            finally:
+                self._broadcaster_task = None
+
+        while not self._event_queue.empty():
+            try:
+                self._event_queue.get_nowait()
+            except Exception:
+                break
 
     async def _broadcast_loop(self) -> None:
         while True:
@@ -169,8 +187,10 @@ class ConnectionManager:
                 continue
             except asyncio.CancelledError:
                 break
-            except Exception as exc:
-                logger.warning("Broadcast loop error: %s", exc)
+            except Exception:
+                # Avoid logging here: the log stream itself is broadcast through this
+                # manager, so warning logs can recursively enqueue new events.
+                continue
 
     # ─────────────────────────────────────────────────────────────
     # Streaming helpers

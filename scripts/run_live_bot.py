@@ -18,6 +18,7 @@ This script:
 from __future__ import annotations
 
 import argparse
+import atexit
 import logging
 import os
 import sys
@@ -27,6 +28,38 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+
+_LOCK_FILE = _ROOT / "live_logs" / "bot.lock"
+
+
+def _acquire_single_instance_lock() -> None:
+    """Prevent multiple bot instances from running at the same time."""
+    _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    if _LOCK_FILE.exists():
+        try:
+            existing_pid = int(_LOCK_FILE.read_text().strip())
+            # Check if that PID is still alive (signal 0 = existence check)
+            os.kill(existing_pid, 0)
+            raise SystemExit(
+                f"\n[FATAL] Bot is al actief (PID {existing_pid}).\n"
+                f"Stop die instantie eerst, of verwijder het lock-bestand:\n"
+                f"  {_LOCK_FILE}\n"
+                f"Dit voorkomt de Telegram 'Conflict: terminated by other getUpdates' fout."
+            )
+        except OSError:
+            # Stale lock — process no longer exists
+            pass
+
+    _LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    atexit.register(_release_lock)
+
+
+def _release_lock() -> None:
+    try:
+        _LOCK_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _parse_args() -> argparse.Namespace:

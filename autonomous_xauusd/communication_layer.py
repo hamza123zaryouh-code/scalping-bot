@@ -13,11 +13,13 @@ from autonomous_xauusd.settings import load_settings
 from backend.main import create_app
 
 try:
+    from telegram.error import Conflict, TelegramError
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
     from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
     TELEGRAM_AVAILABLE = True
 except ImportError:  # pragma: no cover
+    Conflict = TelegramError = Exception  # type: ignore[assignment]
     Update = Any  # type: ignore[assignment]
     Application = None  # type: ignore[assignment]
     CallbackQueryHandler = None  # type: ignore[assignment]
@@ -82,6 +84,9 @@ class TelegramControlLayer:
         self.train_callback = train_callback
         self.enabled = bool(token and chat_id and TELEGRAM_AVAILABLE)
         self._thread: threading.Thread | None = None
+        self._thread_lock = threading.Lock()
+        self._polling_stop = threading.Event()
+        self._polling_conflict = threading.Event()
         self._backend = TelegramBackendClient(api_key=backend_api_key, base_url=backend_base_url)
         self._memory = MemoryLayer(load_settings().database_url)
         self._memory.initialize()
@@ -90,10 +95,17 @@ class TelegramControlLayer:
             logger.warning("python-telegram-bot is not installed; Telegram control layer is disabled.")
 
     def start_in_background(self) -> None:
-        if not self.enabled or self._thread is not None:
+        if not self.enabled:
             return
-        self._thread = threading.Thread(target=self._run_polling, name="telegram-control", daemon=True)
-        self._thread.start()
+
+        with self._thread_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+
+            self._polling_stop.clear()
+            self._polling_conflict.clear()
+            self._thread = threading.Thread(target=self._run_polling, name="telegram-control", daemon=True)
+            self._thread.start()
 
     def notify(self, message: str) -> bool:
         if not self.enabled:
@@ -120,7 +132,17 @@ class TelegramControlLayer:
         await application.bot.send_message(chat_id=self.chat_id, text=message[:4000])
 
     def _run_polling(self) -> None:
-        asyncio.run(self._run_application())
+        try:
+            asyncio.run(self._run_application())
+        except Conflict:
+            logger.warning(
+                "Telegram polling disabled because another bot instance is already consuming updates."
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Telegram polling stopped: %s", exc)
+        finally:
+            with self._thread_lock:
+                self._thread = None
 
     async def _run_application(self) -> None:
         if Application is None or CommandHandler is None or CallbackQueryHandler is None:
@@ -133,10 +155,32 @@ class TelegramControlLayer:
         application.add_handler(CallbackQueryHandler(self._on_callback))
 
         await application.initialize()
-        await application.start()
-        await application.updater.start_polling(drop_pending_updates=True)
-        while True:  # pragma: no cover - long-running service
-            await asyncio.sleep(3600)
+        try:
+            await application.start()
+            await application.updater.start_polling(
+                drop_pending_updates=True,
+                bootstrap_retries=0,
+                error_callback=self._handle_polling_error,
+            )
+            while not self._polling_stop.is_set() and not self._polling_conflict.is_set():
+                await asyncio.sleep(1)
+        finally:
+            if getattr(application, "updater", None) and application.updater.running:
+                await application.updater.stop()
+            if application.running:
+                await application.stop()
+            await application.shutdown()
+
+    def _handle_polling_error(self, error: TelegramError) -> None:
+        if isinstance(error, Conflict):
+            if not self._polling_conflict.is_set():
+                logger.warning(
+                    "Telegram polling conflict detected; stopping local poller so logs stay clean."
+                )
+            self._polling_conflict.set()
+            return
+
+        logger.warning("Telegram polling error: %s", error)
 
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG002
         if not self._is_authorized(update):

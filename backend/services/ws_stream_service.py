@@ -32,8 +32,14 @@ class WsStreamService:
     def __init__(self) -> None:
         self._task: asyncio.Task | None = None
         self._running = False
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def start(self) -> None:
+        current_loop = asyncio.get_running_loop()
+        if self._loop is not current_loop:
+            self._loop = current_loop
+            self._task = None
+
         if self._task is None or self._task.done():
             self._running = True
             self._task = asyncio.create_task(self._stream_loop())
@@ -47,6 +53,8 @@ class WsStreamService:
                 await self._task
             except asyncio.CancelledError:
                 pass
+            finally:
+                self._task = None
 
     async def _stream_loop(self) -> None:
         tick = 0
@@ -188,7 +196,7 @@ class WsStreamService:
             from autonomous_xauusd.memory_layer import MemoryLayer
             memory = MemoryLayer(settings.database_url)
             model_hist = memory.model_history()
-            if model_hist:
+            if not model_hist.empty:
                 latest = model_hist[-1]
                 await ws_manager.push_ml_update({
                     "accuracy": latest.get("accuracy", 0.0),

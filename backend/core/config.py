@@ -47,8 +47,6 @@ def _load_platform_config() -> dict[str, Any]:
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=ROOT / ".env",
-        env_file_encoding="utf-8",
         extra="ignore",
         enable_decoding=False,
     )
@@ -197,4 +195,4 @@ def get_yaml_section(section: str) -> dict[str, Any]:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    return Settings(_env_file=ROOT / ".env", _env_file_encoding="utf-8")

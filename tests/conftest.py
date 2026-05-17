@@ -16,8 +16,11 @@ sys.path.insert(0, str(ROOT))
 
 @pytest.fixture(autouse=True)
 def configured_test_environment(monkeypatch, tmp_path):
+    from autonomous_xauusd.settings import load_settings
     from backend.core.config import get_settings
+    from backend.api.routes import telegram as telegram_route
     from backend.core.security import hash_password
+    from backend.services.telegram_service import TelegramService
 
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("SECRET_KEY", "test_secret_key_32_characters_long")
@@ -27,6 +30,8 @@ def configured_test_environment(monkeypatch, tmp_path):
     monkeypatch.setenv("BOT_MODE", "paper")
     monkeypatch.setenv("POSTGRES_URL", f"sqlite:///{(tmp_path / 'autonomous-test.db').as_posix()}")
     get_settings.cache_clear()
+    telegram_route._service = TelegramService()
+    telegram_route._service_db_url = load_settings().database_url
     yield
     get_settings.cache_clear()
 
