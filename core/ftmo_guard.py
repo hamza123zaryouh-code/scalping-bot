@@ -35,13 +35,13 @@ class FTMOConfig:
     start_capital: float = 160_000.0
 
     # Loss limits (absolute EUR amounts)
-    max_daily_loss: float = 8_000.0
-    max_weekly_loss: float = 11_200.0
+    max_daily_loss: float = 6_000.0   # was €8,000 — verlaagd voor extra accountbescherming
+    max_weekly_loss: float = 10_000.0 # was €11,200 — proportioneel aangepast
     max_total_drawdown: float = 16_000.0
 
     # Safety buffers (stop before hitting hard limits)
-    daily_buffer: float = 500.0       # stop at €7,500 daily loss, not €8,000
-    weekly_buffer: float = 800.0
+    daily_buffer: float = 400.0       # stop at €5,600 daily loss (was €500 → €7,500)
+    weekly_buffer: float = 600.0
     drawdown_buffer: float = 1_000.0
 
     # Trade limits
@@ -158,6 +158,12 @@ class FTMOGuard:
 
     def set_news_lock(self, lock_until: datetime) -> None:
         with self._lock:
+            # Never shorten an existing lock — take the later expiry
+            if (
+                self._state.news_lock_until is not None
+                and self._state.news_lock_until > lock_until
+            ):
+                lock_until = self._state.news_lock_until
             self._state.news_lock_until = lock_until
             logger.warning(
                 "News lock activated until %s",
@@ -417,7 +423,7 @@ _guard_lock = threading.Lock()
 def get_ftmo_guard(config: FTMOConfig | None = None) -> FTMOGuard:
     global _guard_instance
     with _guard_lock:
-        if _guard_instance is None:
+        if _guard_instance is None or config is not None:
             _guard_instance = FTMOGuard(config)
         return _guard_instance
 

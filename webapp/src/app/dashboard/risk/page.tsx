@@ -77,7 +77,7 @@ export default function RiskDashboardPage() {
 
   const canTrade = merged.can_trade ?? true;
   const dailyUsed = merged.daily_loss_used ?? 0;
-  const dailyLimit = merged.daily_loss_limit ?? 8000;
+  const dailyLimit = merged.daily_loss_limit ?? 6000;
   const totalDD = merged.total_drawdown ?? 0;
   const totalDDLimit = merged.total_dd_limit ?? 16000;
   const equity = merged.equity ?? 160000;
@@ -85,7 +85,7 @@ export default function RiskDashboardPage() {
   const activeLocks = merged.active_locks ?? [];
 
   const weeklyLoss = Math.max(0, -(merged.weekly_pnl ?? 0));
-  const weeklyLimit = 11200;
+  const weeklyLimit = 10000;
 
   return (
     <AppShell>

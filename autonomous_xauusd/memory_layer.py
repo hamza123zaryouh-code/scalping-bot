@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Iterator
 
 import pandas as pd
@@ -142,7 +142,7 @@ class MemoryLayer:
             {
                 "parameters": parameters.to_record(),
                 "source": source,
-                "updated_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
             },
         )
 
@@ -173,7 +173,7 @@ class MemoryLayer:
         merged = {
             **current,
             **updates,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         self.set_runtime_state("bot_control", merged)
         return merged
@@ -240,7 +240,7 @@ class MemoryLayer:
             row.status = status
             row.result_message = result_message
             row.error_message = error_message
-            row.executed_at = datetime.utcnow()
+            row.executed_at = datetime.now(timezone.utc)
 
     def recent_control_commands(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.session_scope() as session:

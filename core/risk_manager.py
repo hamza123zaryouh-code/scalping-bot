@@ -134,7 +134,21 @@ def calculate_position_size(equity: float, risk_per_trade: float, stop_distance:
         return 0.0
 
     risk_amount = equity * risk_per_trade
-    raw_volume = risk_amount / stop_distance
+    # point_value = monetary value of 1 price unit of movement per lot
+    # MT5 provides trade_tick_value (value per tick) and trade_tick_size (size of one tick).
+    # For XAUUSD: tick_size=0.01, tick_value≈1.0 → point_value = 1.0/0.01 = 100 $/lot/point
+    tick_value = safe_float(getattr(symbol_info, "trade_tick_value", 0.0))
+    tick_size = safe_float(getattr(symbol_info, "trade_tick_size", 0.0))
+    if tick_value > 0 and tick_size > 0:
+        point_value_per_lot = tick_value / tick_size
+    else:
+        # Fallback: assume XAUUSD standard contract (100 oz, USD account)
+        contract_size = safe_float(getattr(symbol_info, "trade_contract_size", 100.0), 100.0)
+        point_value_per_lot = contract_size
+    denominator = stop_distance * point_value_per_lot
+    if denominator <= 0:
+        return 0.0
+    raw_volume = risk_amount / denominator
     return normalize_volume(
         raw_volume=raw_volume,
         min_volume=safe_float(getattr(symbol_info, "volume_min", 0.01), 0.01),

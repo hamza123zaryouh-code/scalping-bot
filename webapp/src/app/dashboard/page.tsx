@@ -25,6 +25,8 @@ function ProgressBar({ pct, color }: { pct: number; color: string }) {
   );
 }
 
+const STARTING_CAPITAL = 160_000;
+
 export default function DashboardPage() {
   const dashFetcher = useCallback(() => api.dashboard(), []);
   const equityFetcher = useCallback(() => api.equityCurve(), []);
@@ -61,14 +63,14 @@ export default function DashboardPage() {
         {/* FTMO Warning */}
         {!risk.can_trade && (
           <div style={{
-            background: "rgba(239,68,68,0.1)",
-            border: "1px solid rgba(239,68,68,0.3)",
+            background: "rgba(245,158,11,0.08)",
+            border: "1px solid rgba(245,158,11,0.25)",
             borderRadius: 10,
             padding: "14px 18px",
             display: "flex",
             alignItems: "center",
             gap: 12,
-            color: "#f87171",
+            color: "#fbbf24",
             fontWeight: 600,
             fontSize: 14,
           }}>
@@ -82,7 +84,7 @@ export default function DashboardPage() {
           <KPICard
             label="Account Balance"
             value={fmtEur(acc.balance)}
-            sub="Starting capital €160,000"
+            sub={`Starting capital ${fmtEur(STARTING_CAPITAL)}`}
             color="default"
             icon="💰"
           />
@@ -90,22 +92,22 @@ export default function DashboardPage() {
             label="Equity"
             value={fmtEur(acc.equity)}
             sub={`Floating ${acc.floating_pnl >= 0 ? "+" : ""}${fmtEur(acc.floating_pnl)}`}
-            color={acc.floating_pnl >= 0 ? "green" : "red"}
+            color={acc.floating_pnl > 0 ? "green" : acc.floating_pnl < 0 ? "red" : "default"}
             icon="📈"
           />
           <KPICard
             label="Daily P&L"
             value={fmtEur(acc.daily_pnl)}
             sub={`vs daily limit ${fmtEur(risk.daily_loss_limit)}`}
-            color={acc.daily_pnl >= 0 ? "green" : "red"}
-            trend={acc.daily_pnl >= 0 ? "up" : "down"}
+            color={acc.daily_pnl > 0 ? "green" : acc.daily_pnl < 0 ? "red" : "default"}
+            trend={acc.daily_pnl > 0 ? "up" : acc.daily_pnl < 0 ? "down" : "neutral"}
             icon="📊"
           />
           <KPICard
             label="Drawdown"
             value={`${acc.drawdown_pct.toFixed(2)}%`}
-            sub={`${fmtEur(acc.drawdown_usd)} / Max 6%`}
-            color={acc.drawdown_pct > 4 ? "red" : acc.drawdown_pct > 2 ? "yellow" : "green"}
+            sub={`${fmtEur(acc.drawdown_usd)} / Max 10%`}
+            color={acc.drawdown_pct > 4 ? "red" : acc.drawdown_pct > 2 ? "yellow" : acc.drawdown_pct > 0 ? "blue" : "default"}
             icon="📉"
           />
         </div>
@@ -116,40 +118,40 @@ export default function DashboardPage() {
             label="Win Rate"
             value={`${perf.win_rate}%`}
             sub={`${perf.wins}W / ${perf.losses}L`}
-            color={perf.win_rate >= 50 ? "green" : "red"}
+            color={perf.total_trades === 0 ? "default" : perf.win_rate >= 50 ? "green" : "red"}
             icon="🎯"
           />
           <KPICard
             label="Profit Factor"
             value={perf.profit_factor.toFixed(2)}
             sub={`Target > 1.4`}
-            color={perf.profit_factor >= 1.4 ? "green" : perf.profit_factor >= 1.0 ? "yellow" : "red"}
+            color={perf.total_trades === 0 ? "default" : perf.profit_factor >= 1.4 ? "green" : perf.profit_factor >= 1.0 ? "yellow" : "red"}
             icon="⚖️"
           />
           <KPICard
             label="Total Trades"
             value={perf.total_trades}
             sub={`Total P&L ${fmtEur(perf.total_pnl)}`}
-            color={perf.total_pnl >= 0 ? "green" : "red"}
+            color={perf.total_trades === 0 ? "default" : perf.total_pnl >= 0 ? "green" : "red"}
             icon="📋"
           />
           <KPICard
             label="AI Confidence"
             value={`${(act.ai_confidence * 100).toFixed(0)}%`}
             sub={`${act.signals_today} signals today`}
-            color={act.ai_confidence >= 0.7 ? "green" : act.ai_confidence >= 0.4 ? "yellow" : "red"}
+            color={act.signals_today === 0 ? "default" : act.ai_confidence >= 0.7 ? "green" : act.ai_confidence >= 0.4 ? "yellow" : "red"}
             icon="🤖"
           />
         </div>
 
         {/* Charts Row */}
         <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}>
-          <Card title="Equity Curve" subtitle={`Starting capital ${fmtEur(160000)}`}>
-            <EquityChart data={equityPoints} startingCapital={160000} height={230} />
+          <Card title="Equity Curve" subtitle={`Starting capital ${fmtEur(STARTING_CAPITAL)}`}>
+            <EquityChart data={equityPoints} startingCapital={STARTING_CAPITAL} height={230} />
           </Card>
 
-          <Card title="Drawdown" subtitle="FTMO Max 6%">
-            <DrawdownChart data={ddPoints} height={230} maxAllowed={-6} />
+          <Card title="Drawdown" subtitle="FTMO Max 10% totaal / 5% dag">
+            <DrawdownChart data={ddPoints} height={230} maxAllowed={-10} />
           </Card>
         </div>
 
@@ -166,13 +168,13 @@ export default function DashboardPage() {
               <div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>Daily Loss</span>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: risk.daily_loss_pct > 75 ? "var(--accent-red)" : "var(--text-primary)" }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: risk.daily_loss_pct > 75 ? "var(--accent-red)" : risk.daily_loss_pct > 0 ? "var(--text-primary)" : "var(--text-secondary)" }}>
                     {fmtEur(risk.daily_loss_used)} / {fmtEur(risk.daily_loss_limit)}
                   </span>
                 </div>
                 <ProgressBar
                   pct={risk.daily_loss_pct}
-                  color={risk.daily_loss_pct > 75 ? "var(--accent-red)" : risk.daily_loss_pct > 50 ? "var(--accent-yellow)" : "var(--accent-green)"}
+                  color={risk.daily_loss_pct > 75 ? "var(--accent-red)" : risk.daily_loss_pct > 50 ? "var(--accent-yellow)" : risk.daily_loss_pct > 0 ? "var(--accent-blue)" : "var(--border)"}
                 />
                 <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 3 }}>{risk.daily_loss_pct.toFixed(1)}% used</p>
               </div>
@@ -180,13 +182,13 @@ export default function DashboardPage() {
               <div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>Total Drawdown</span>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: risk.total_loss_pct > 75 ? "var(--accent-red)" : "var(--text-primary)" }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: risk.total_loss_pct > 75 ? "var(--accent-red)" : risk.total_loss_pct > 0 ? "var(--text-primary)" : "var(--text-secondary)" }}>
                     {fmtEur(risk.total_loss_used)} / {fmtEur(risk.total_loss_limit)}
                   </span>
                 </div>
                 <ProgressBar
                   pct={risk.total_loss_pct}
-                  color={risk.total_loss_pct > 75 ? "var(--accent-red)" : risk.total_loss_pct > 50 ? "var(--accent-yellow)" : "var(--accent-green)"}
+                  color={risk.total_loss_pct > 75 ? "var(--accent-red)" : risk.total_loss_pct > 50 ? "var(--accent-yellow)" : risk.total_loss_pct > 0 ? "var(--accent-blue)" : "var(--border)"}
                 />
                 <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 3 }}>{risk.total_loss_pct.toFixed(1)}% used</p>
               </div>
@@ -218,14 +220,14 @@ export default function DashboardPage() {
                 <p style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Buy</p>
               </div>
               <div style={{ textAlign: "center" }}>
-                <p style={{ fontSize: 28, fontWeight: 700, color: "var(--accent-red)" }}>{signals?.sell_count ?? 0}</p>
+                <p style={{ fontSize: 28, fontWeight: 700, color: (signals?.sell_count ?? 0) > 0 ? "var(--accent-red)" : "var(--text-secondary)" }}>{signals?.sell_count ?? 0}</p>
                 <p style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Sell</p>
               </div>
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 120, overflowY: "auto" }}>
-              {((signals as { signals: Array<{ time: string; side: string; label?: string; reason?: string }> } | null)?.signals ?? []).slice(-5).reverse().map((s, i) => (
-                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid var(--border-subtle)" }}>
+              {((signals as { signals: Array<{ time: string; side: string; label?: string; reason?: string }> } | null)?.signals ?? []).slice(-5).reverse().map((s) => (
+                <div key={`${s.time}-${s.side}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid var(--border-subtle)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <Badge variant={s.side === "buy" ? "green" : "red"}>{s.side.toUpperCase()}</Badge>
                     <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{s.label ?? s.reason ?? "Signal"}</span>
@@ -235,7 +237,7 @@ export default function DashboardPage() {
                   </span>
                 </div>
               ))}
-              {!signals?.count && (
+              {(signals?.count ?? 0) === 0 && (
                 <p style={{ fontSize: 12, color: "var(--text-muted)", textAlign: "center", padding: "20px 0" }}>No signals yet today</p>
               )}
             </div>
@@ -249,7 +251,7 @@ export default function DashboardPage() {
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
                 <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>AI Confidence</span>
-                <span style={{ fontSize: 12, fontWeight: 600, color: act.ai_confidence >= 0.7 ? "var(--accent-green)" : "var(--accent-yellow)" }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: act.signals_today === 0 ? "var(--text-secondary)" : act.ai_confidence >= 0.7 ? "var(--accent-green)" : "var(--accent-yellow)" }}>
                   {(act.ai_confidence * 100).toFixed(0)}%
                 </span>
               </div>

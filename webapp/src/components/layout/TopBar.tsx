@@ -2,10 +2,10 @@
 import { usePathname } from "next/navigation";
 import { LiveBadge, ModeBadge } from "../ui/Badge";
 import { useWebSocket } from "../../lib/hooks/useWebSocket";
-import { useState, useCallback } from "react";
 
 const PAGE_TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
+  "/dashboard/risk": "FTMO Risk Control",
   "/trading": "Live Trading",
   "/backtest": "Backtest Center",
   "/ai-memory": "AI Memory Center",
@@ -23,15 +23,14 @@ interface TopBarProps {
 export function TopBar({ mode = "paper", lastUpdate }: TopBarProps) {
   const pathname = usePathname();
   const title = PAGE_TITLES[pathname] ?? "Dashboard";
-  const [wsAlive, setWsAlive] = useState(false);
 
-  const handleMessage = useCallback((msg: { type: string }) => {
-    if (msg.type === "pong" || msg.type === "connection.accepted") setWsAlive(true);
-  }, []);
+  const { connected } = useWebSocket({});
 
-  const { connected } = useWebSocket({ onMessage: handleMessage });
-
-  const now = lastUpdate ? new Date(lastUpdate).toLocaleTimeString() : new Date().toLocaleTimeString();
+  const now = (() => {
+    if (!lastUpdate) return new Date().toLocaleTimeString();
+    const d = new Date(lastUpdate);
+    return isNaN(d.getTime()) ? new Date().toLocaleTimeString() : d.toLocaleTimeString();
+  })();
 
   return (
     <header style={{
@@ -51,7 +50,7 @@ export function TopBar({ mode = "paper", lastUpdate }: TopBarProps) {
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+        <span style={{ fontSize: 11, color: "var(--text-muted)" }} suppressHydrationWarning>
           Updated {now}
         </span>
         <ModeBadge mode={mode} />

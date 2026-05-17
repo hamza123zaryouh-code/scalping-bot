@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -186,6 +186,7 @@ class IntelligenceLayer:
         sentiment: SentimentScore | None = None,
         sentiment_threshold: float = 0.5,
         is_killzone: bool = False,
+        strategy_cfg: dict | None = None,
     ) -> SignalDecision | None:
         """
         Genereert een handelssignaal via de core StrategyEngine.
@@ -193,6 +194,7 @@ class IntelligenceLayer:
         Alle signaallogica (6 types) komt uit strategy_engine.
         ML confidence wordt gebruikt als extra filter en confidence score.
         Sentiment wordt doorgegeven voor boost/blokkering.
+        strategy_cfg: als opgegeven, wordt dit gebruikt i.p.v. de afgeleide cfg
         """
         if len(frame) < 4:
             return None
@@ -204,22 +206,25 @@ class IntelligenceLayer:
             sent_score = float(sentiment.score)
             sent_label = str(sentiment.label)
 
-        # Strategie configuratie uit parameters
-        # adx_min (15) voor H1 apart van h4adx_min (18) — was eerder beiden h4_adx_weak
-        cfg = {
-            "risk_a": float(parameters.risk_strong_regime),
-            "risk_b": float(parameters.risk_weak_regime) * 1.2,
-            "risk_c": float(parameters.risk_weak_regime),
-            "adx_min": 15.0,                                      # H1 ADX min — lager dan h4
-            "h4adx_min": float(parameters.h4_adx_weak),           # H4 ADX min (18)
-            "tp1_r": float(parameters.take_profit_atr) * 0.5,
-            "tp2_r": float(parameters.take_profit_atr),
-            "tp3_r": float(parameters.take_profit_atr) * 1.5,    # Originele waarde
-            "sl_atr": float(parameters.stop_loss_atr),
-            "trailing": True,
-            "breakeven_r": 0.8,
-            "kz_mult": 1.25,
-        }
+        # Strategie configuratie: gebruik strategy_cfg als opgegeven (V20 live config)
+        # Anders: afgeleid van StrategyParameters (legacy fallback)
+        if strategy_cfg is not None:
+            cfg = dict(strategy_cfg)
+        else:
+            cfg = {
+                "risk_a": float(parameters.risk_strong_regime),
+                "risk_b": float(parameters.risk_weak_regime) * 1.2,
+                "risk_c": float(parameters.risk_weak_regime),
+                "adx_min": 15.0,
+                "h4adx_min": float(parameters.h4_adx_weak),
+                "tp1_r": float(parameters.take_profit_atr) * 0.5,
+                "tp2_r": float(parameters.take_profit_atr),
+                "tp3_r": float(parameters.take_profit_atr) * 1.5,
+                "sl_atr": float(parameters.stop_loss_atr),
+                "trailing": True,
+                "breakeven_r": 0.8,
+                "kz_mult": 1.25,
+            }
 
         # ML confidence score berekenen
         ml_conf = self._get_ml_confidence(frame)
@@ -245,7 +250,7 @@ class IntelligenceLayer:
             symbol=symbol,
             timeframe=timeframe,
             side=_SIDE_MAP.get(signal.direction, "buy"),
-            opened_at=signal.timestamp or datetime.utcnow(),
+            opened_at=signal.timestamp or datetime.now(timezone.utc),
             entry_price=signal.entry_price,
             stop_loss=signal.stop_loss,
             take_profit=signal.take_profit_2,  # Gebruik TP2 als primaire TP
@@ -299,12 +304,12 @@ class IntelligenceLayer:
         V17 verbetering: gebruikt GradientBoosting als ensemble
         naast RandomForest, kiest het beste model.
         """
-        if closed_trades.empty or len(closed_trades) < 25:
+        if closed_trades.empty or len(closed_trades) < 50:
             return None
 
         frame = closed_trades.copy()
 
-        # Extended feature set voor V17
+        # Extended feature set voor V20
         feature_columns = [
             "rsi",
             "rsi_fast",
@@ -324,7 +329,7 @@ class IntelligenceLayer:
         frame["label"] = (frame["pnl"] > 0).astype(int)
         frame = frame.dropna(subset=available)
 
-        if frame["label"].nunique() < 2 or len(frame) < 25:
+        if frame["label"].nunique() < 2 or len(frame) < 50:
             return None
 
         X = frame[available]
@@ -386,7 +391,7 @@ class IntelligenceLayer:
         self.artifact_path.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(
             {
-                "trained_at": datetime.utcnow().isoformat(),
+                "trained_at": datetime.now(timezone.utc).isoformat(),
                 "model_type": model_name,
                 "parameters": asdict(current_parameters),
                 "feature_columns": available,
@@ -408,7 +413,7 @@ class IntelligenceLayer:
         )
 
         return TrainingOutcome(
-            trained_at=datetime.utcnow(),
+            trained_at=datetime.now(timezone.utc),
             sample_count=len(frame),
             accuracy=accuracy,
             precision=precision,
@@ -417,7 +422,7 @@ class IntelligenceLayer:
             feature_importances=importances,
             parameter_overrides=overrides,
             model_path=str(self.artifact_path),
-            notes=f"V17 {model_name} model: strategy_engine geïntegreerd, {len(available)} features",
+            notes=f"V20 {model_name} model: strategy_engine geïntegreerd, {len(available)} features",
         )
 
     def get_setup_quality_score(self, signal: SignalResult) -> float:

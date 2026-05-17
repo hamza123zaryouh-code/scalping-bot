@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -386,7 +386,7 @@ class FeedbackEngine:
             logger.warning("FeedbackEngine: model laden mislukt: %s", exc)
 
     def _row_to_record(self, row) -> TradeFeatureRecord:
-        opened_at = pd.to_datetime(row.get("opened_at", datetime.utcnow()))
+        opened_at = pd.to_datetime(row.get("opened_at", datetime.now(timezone.utc)))
         closed_at = pd.to_datetime(row.get("closed_at", opened_at))
         holding_minutes = max(0.0, (closed_at - opened_at).total_seconds() / 60.0) if pd.notna(closed_at) else 0.0
         atr = float(row.get("atr", 0.0) or 0.0)

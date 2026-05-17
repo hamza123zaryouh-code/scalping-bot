@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -16,7 +16,7 @@ def compute_report(history: pd.DataFrame, ml_history: pd.DataFrame | None = None
 
     if closed.empty:
         return AnalyticsReport(
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(timezone.utc),
             total_trades=total,
             closed_trades=0,
             win_rate=0.0,
@@ -99,7 +99,7 @@ def compute_report(history: pd.DataFrame, ml_history: pd.DataFrame | None = None
             })
 
     return AnalyticsReport(
-        generated_at=datetime.utcnow(),
+        generated_at=datetime.now(timezone.utc),
         total_trades=total,
         closed_trades=n_closed,
         win_rate=win_rate,

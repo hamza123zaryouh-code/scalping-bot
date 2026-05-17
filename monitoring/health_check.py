@@ -5,7 +5,7 @@ import json
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -25,7 +25,7 @@ class CheckResult:
 
 @dataclass
 class HealthReport:
-    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     checks: list[CheckResult] = field(default_factory=list)
 
     @property

@@ -87,9 +87,9 @@ async def telegram_backtest_latest(_key: str = Depends(require_telegram_api_key)
     return APIResponse(data=result, message=result["summary"])
 
 
-@router.get("/backtest/compare", response_model=APIResponse[dict], summary="Compare V16 with V17")
+@router.get("/backtest/compare", response_model=APIResponse[dict], summary="Compare baseline with latest backtest")
 async def telegram_backtest_compare(_key: str = Depends(require_telegram_api_key)):
-    result = _service.compare_v16_vs_v17()
+    result = _service.compare_strategy_versions()
     return APIResponse(data=result, message=result["summary"])
 
 

@@ -29,7 +29,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -399,7 +399,7 @@ class SentimentEngine:
             macro_event_level=macro_level,
             macro_event_keywords=macro_keywords[:5],
             risk_modifier=risk_mod,
-            fetched_at=datetime.utcnow(),
+            fetched_at=datetime.now(timezone.utc),
         )
 
     @staticmethod
@@ -424,7 +424,7 @@ class SentimentEngine:
         return EnhancedSentiment(
             score=0.0, label="neutral", confidence=0.0,
             headline_count=0, bullish_count=0, bearish_count=0,
-            fetched_at=datetime.utcnow(),
+            fetched_at=datetime.now(timezone.utc),
         )
 
     @staticmethod

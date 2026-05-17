@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     telegram_control_api_key: str = ""
     telegram_backend_base_url: str = "http://127.0.0.1:8000"
 
-    ftmo_max_daily_loss: float = 8000.0
+    ftmo_max_daily_loss: float = 6000.0
     ftmo_max_total_loss: float = 16000.0
     starting_capital: float = 160000.0
 

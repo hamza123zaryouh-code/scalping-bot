@@ -90,7 +90,8 @@ class XAUUSDSettings:
 
 def load_settings(base_dir: Path | None = None) -> XAUUSDSettings:
     root = base_dir or Path(__file__).resolve().parent.parent
-    load_dotenv(root / ".env")
+    # override=False: existing env vars (e.g. set by tests) take precedence over .env
+    load_dotenv(root / ".env", override=False)
 
     postgres_url = (
         os.getenv("POSTGRES_URL", "").strip()

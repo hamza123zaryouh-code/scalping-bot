@@ -431,7 +431,7 @@ class TelegramControlLayer:
             [
                 [InlineKeyboardButton("Run Quick Backtest", callback_data="backtest:quick_run")],
                 [InlineKeyboardButton("Latest Backtest Result", callback_data="backtest:latest")],
-                [InlineKeyboardButton("Compare V16 vs V17", callback_data="backtest:compare")],
+                [InlineKeyboardButton("Compare Baseline vs Latest", callback_data="backtest:compare")],
                 [InlineKeyboardButton("Show Equity Curve Summary", callback_data="backtest:equity_curve")],
                 [InlineKeyboardButton("⬅️ Main Menu", callback_data="menu:main")],
             ]

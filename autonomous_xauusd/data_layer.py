@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
@@ -10,6 +11,7 @@ import yfinance as yf
 
 from core.risk_manager import calculate_position_size
 
+from .core.execution.live_execution_engine import LiveExecutionEngine
 from .models import ClosedTradeResult, ExecutionResult, SignalDecision, StrategyParameters
 from .settings import XAUUSDSettings
 
@@ -28,6 +30,11 @@ class DataExecutionLayer:
         self.connected = False
         self.paper_balance = settings.paper_starting_balance
         self.paper_positions: dict[str, dict[str, Any]] = {}
+        self._live_engine = LiveExecutionEngine(
+            magic_number=settings.magic_number,
+            order_comment=settings.order_comment,
+            max_slippage_points=settings.max_slippage_points,
+        )
 
     def connect(self) -> bool:
         if mt5 is None:
@@ -64,7 +71,7 @@ class DataExecutionLayer:
             frame = pd.DataFrame(rates)
             if frame.empty:
                 return frame
-            frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True).dt.tz_localize(None)
+            frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True).dt.tz_convert(None)
             return (
                 frame.rename(columns={"tick_volume": "volume"})
                 .assign(spread=lambda data: data.get("spread", 0.0))
@@ -83,7 +90,8 @@ class DataExecutionLayer:
         if "volume" not in frame.columns:
             frame["volume"] = 0.0
         frame["spread"] = 0.0
-        frame.index = pd.to_datetime(frame.index).tz_localize(None)
+        idx = pd.to_datetime(frame.index)
+        frame.index = idx.tz_convert(None) if idx.tz is not None else idx
         return frame.loc[:, ["open", "high", "low", "close", "volume", "spread"]].sort_index()
 
     def account_status(self) -> dict[str, Any]:
@@ -150,8 +158,10 @@ class DataExecutionLayer:
         signal: SignalDecision,
         parameters: StrategyParameters,
         account_equity: float,
+        risk_multiplier: float = 1.0,
     ) -> ExecutionResult:
         volume = self._calculate_volume(account_equity, signal, parameters)
+        volume = round(max(volume * max(0.0, min(risk_multiplier, 1.0)), 0.01), 2)
         if volume <= 0:
             raise RuntimeError("Calculated volume is zero; trade is blocked.")
 
@@ -185,52 +195,37 @@ class DataExecutionLayer:
             }
             return result
 
-        tick = mt5.symbol_info_tick(signal.symbol)
-        if tick is None:
-            raise RuntimeError("MT5 tick unavailable")
-        symbol_info = mt5.symbol_info(signal.symbol)
-        if symbol_info is None:
-            raise RuntimeError("MT5 symbol info unavailable")
-
-        side_type = mt5.ORDER_TYPE_BUY if signal.side == "buy" else mt5.ORDER_TYPE_SELL
-        price = float(getattr(tick, "ask" if signal.side == "buy" else "bid"))
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": signal.symbol,
-            "volume": volume,
-            "type": side_type,
-            "price": price,
-            "sl": signal.stop_loss,
-            "tp": signal.take_profit,
-            "deviation": self.settings.max_slippage_points,
-            "magic": self.settings.magic_number,
-            "comment": self.settings.order_comment,
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": getattr(symbol_info, "filling_mode", mt5.ORDER_FILLING_IOC),
-        }
-        response = mt5.order_send(request)
-        if response is None:
-            raise RuntimeError(f"MT5 order_send returned None: {mt5.last_error()}")
-        retcode = int(getattr(response, "retcode", 0))
-        if retcode != mt5.TRADE_RETCODE_DONE:
-            raise RuntimeError(f"MT5 order failed, retcode={retcode}")
-
+        # Delegate to LiveExecutionEngine for retry/slippage/audit/spread hardening
+        live_result = self._live_engine.execute_market_order(
+            symbol=signal.symbol,
+            side=signal.side,
+            volume=volume,
+            stop_loss=signal.stop_loss,
+            take_profit=signal.take_profit,
+        )
         return ExecutionResult(
-            broker_ticket=str(getattr(response, "order", getattr(response, "deal", ""))),
+            broker_ticket=str(live_result.ticket),
             symbol=signal.symbol,
             timeframe=signal.timeframe,
             side=signal.side,
             mode=self.settings.mode,
-            volume=volume,
-            opened_at=datetime.utcnow(),
-            entry_price=price,
+            volume=live_result.volume,
+            opened_at=datetime.now(timezone.utc),
+            entry_price=live_result.fill_price,
             stop_loss=signal.stop_loss,
             take_profit=signal.take_profit,
             status="open",
             market_regime=signal.market_regime,
             reason=signal.reason,
             features=signal.features,
-            meta={"execution": "mt5", "retcode": retcode},
+            meta={
+                "execution": "live_engine",
+                "slippage_points": live_result.slippage_points,
+                "spread_points": live_result.spread_points,
+                "latency_ms": live_result.latency_ms,
+                "retcode": live_result.retcode,
+                "attempts": live_result.attempts,
+            },
         )
 
     def sync_trade_closures(
@@ -305,8 +300,8 @@ class DataExecutionLayer:
             if live_position:
                 continue
 
-            window_start = datetime.utcnow() - timedelta(days=7)
-            deals = mt5.history_deals_get(window_start, datetime.utcnow(), position=int(ticket))
+            window_start = datetime.now(timezone.utc) - timedelta(days=7)
+            deals = mt5.history_deals_get(window_start, datetime.now(timezone.utc), position=int(ticket))
             if not deals:
                 continue
 
@@ -314,7 +309,7 @@ class DataExecutionLayer:
             closed.append(
                 ClosedTradeResult(
                     broker_ticket=ticket,
-                    closed_at=datetime.utcfromtimestamp(int(getattr(final_deal, "time", time.time()))),
+                    closed_at=datetime.fromtimestamp(int(getattr(final_deal, "time", time.time())), tz=timezone.utc),
                     exit_price=float(getattr(final_deal, "price", 0.0)),
                     pnl=float(getattr(final_deal, "profit", 0.0)),
                     status="closed",
@@ -335,7 +330,7 @@ class DataExecutionLayer:
             closed.append(
                 ClosedTradeResult(
                     broker_ticket=ticket,
-                    closed_at=datetime.utcnow(),
+                    closed_at=datetime.now(timezone.utc),
                     exit_price=exit_price,
                     pnl=pnl,
                     status="closed",
@@ -383,7 +378,7 @@ class DataExecutionLayer:
             closed.append(
                 ClosedTradeResult(
                     broker_ticket=str(position.ticket),
-                    closed_at=datetime.utcnow(),
+                    closed_at=datetime.now(timezone.utc),
                     exit_price=price,
                     pnl=float(getattr(position, "profit", 0.0)),
                     status="closed",
@@ -420,7 +415,9 @@ class DataExecutionLayer:
         risk_amount = max(equity * risk_pct, 0.0)
         if stop_distance <= 0:
             return 0.0
-        raw = risk_amount / stop_distance
+        # XAUUSD standard: 1 lot = 100 oz → $100 per 1 price-unit of movement
+        point_value_per_lot = 100.0
+        raw = risk_amount / (stop_distance * point_value_per_lot)
         return round(min(max(raw, 0.01), max_lot), 2)
 
     def _resolve_mt5_timeframe(self, timeframe_name: str) -> int:

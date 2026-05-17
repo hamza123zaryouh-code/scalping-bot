@@ -66,6 +66,10 @@ def _setup_logging(level: str) -> None:
     # Suppress noisy third-party loggers
     for noisy in ("httpx", "urllib3", "asyncio", "yfinance", "feedparser"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    # Telegram Conflict = non-fatal (andere instantie draait elders, bijv. VPS)
+    # Onderdruk de stacktraces zodat de logs leesbaar blijven
+    logging.getLogger("telegram.ext.Updater").setLevel(logging.CRITICAL)
+    logging.getLogger("telegram.ext._updater").setLevel(logging.CRITICAL)
 
 
 def _pre_flight_checks(mode: str) -> None:

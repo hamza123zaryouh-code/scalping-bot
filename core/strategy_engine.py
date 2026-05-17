@@ -18,8 +18,9 @@ Multi-TF: H1 indicators + H4 regime + D1 trend
 from __future__ import annotations
 
 import math
+import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import numpy as np
@@ -58,29 +59,70 @@ DEFAULT_CFG: dict = {
 # ─────────────────────────────────────────────────────────────────
 
 V18_CFG: dict = {
-    "risk_a": 0.0200,       # EMA cross — 2.0% (was 1.2%, +67%) | KZ: 3.0% met kz_mult
-    "risk_b": 0.0150,       # MACD/BOS/Momentum — 1.5% (was 0.9%)
-    "risk_c": 0.0120,       # Pullback/MSS — 1.2% (was 0.75%)
-    "adx_min": 8,           # Minimale ADX H1 — iets meer signalen (was 10)
-    "h4adx_min": 12,        # Minimale ADX H4 (was 14)
-    "vol_mult": 1.00,       # Volume filter ongewijzigd
-    "tp1_r": 1.5,           # TP1 reward ratio — ongewijzigd
-    "tp2_r": 3.5,           # TP2 reward ratio — groter (was 3.0)
-    "tp3_r": 6.5,           # TP3 reward ratio — grotere runners (was 5.0)
-    "tp1_pct": 0.25,        # Minder uitstappen bij TP1 (was 0.30) → meer blijft lopen
-    "tp2_pct": 0.30,        # Fractie positie bij TP2
-    "sl_atr": 1.5,          # SL ATR multiplier — ongewijzigd
+    # ── Risico per signaaltype (FTMO-safe op €160k) ────────────────
+    "risk_a": 0.0150,       # EMA cross — 1.5% | KZ: 1.875% met kz_mult
+    "risk_b": 0.0120,       # MACD/BOS/Momentum — 1.2%
+    "risk_c": 0.0100,       # Pullback/MSS — 1.0%
+    # ── Signaalfilters ─────────────────────────────────────────────
+    "adx_min": 9,           # Minimale ADX H1
+    "h4adx_min": 12,        # Minimale ADX H4
+    "vol_mult": 1.00,       # Volume filter
+    # ── Take profit niveaus ────────────────────────────────────────
+    "tp1_r": 1.5,           # TP1 reward ratio
+    "tp2_r": 3.5,           # TP2 reward ratio
+    "tp3_r": 6.5,           # TP3 reward ratio (grote runners)
+    "tp1_pct": 0.25,        # 25% uitstappen bij TP1
+    "tp2_pct": 0.30,        # 30% bij TP2
+    # ── Stop loss ─────────────────────────────────────────────────
+    "sl_atr": 1.5,          # SL ATR multiplier
     "sl_max": 2.0,          # Max SL ATR multiplier
-    "max_dag": 14,          # Max trades per dag — meer volume (was 10)
-    "sl_dag_max": 4,        # Max SL's per dag — iets meer ruimte (was 3)
-    "cooldown_h": 0.5,      # Cooldown 30 min — snellere herinstap (was 1h)
+    # ── Trade frequentie ──────────────────────────────────────────
+    "max_dag": 10,          # Max trades per dag
+    "sl_dag_max": 3,        # Max SL's per dag
+    "cooldown_h": 0.5,      # Cooldown 30 min
+    # ── Trailing / breakeven ──────────────────────────────────────
     "trailing": True,       # Trailing stop actief
-    "breakeven_r": 0.7,     # Breakeven iets eerder (was 0.8R)
-    "kz_mult": 1.50,        # Kill zone boost +50% (was +25%) — London/NY open premium
-    # Compound boost: wekelijks winst-budget herberekend op huidige equity (ingebakken in engine)
-    "weekly_compound": True,    # Activeer wekelijkse compound herberekening
-    "compound_boost": 1.10,     # +10% risico-budget na elke winstgevende week
-    "max_lot_size": 6.0,        # FTMO lotsize limiet — boven deze waarde wordt risk afgekapt
+    "breakeven_r": 0.7,     # Breakeven na 0.7R winst
+    # ── Kill zone boost ────────────────────────────────────────────
+    "kz_mult": 1.25,        # Kill zone boost +25% — London/NY open premium
+    # ── Compound systeem ──────────────────────────────────────────
+    "weekly_compound": True,    # Wekelijkse compound herberekening
+    "compound_boost": 1.08,     # +8% risico-budget na elke winstgevende week
+    # ── FTMO limieten ─────────────────────────────────────────────
+    "max_lot_size": 4.0,            # Harde lot cap
+    "max_daily_loss_eur": 6_000.0,  # Dagelijkse verliesgrens €6k
+}
+
+# ─────────────────────────────────────────────────────────────────
+# V19 PARAMETERS (Verbeterd — betere verliesweek-bescherming)
+# Fixes: tighter filters, conservative compound, weekly loss protection
+# ─────────────────────────────────────────────────────────────────
+
+V19_CFG: dict = {
+    **V18_CFG,
+    # ── Betere risk/reward (grotere winnaars, sneller breakeven) ──
+    "tp3_r": 7.0,              # grotere runners lopen langer
+    "tp1_pct": 0.20,           # minder sluiten bij TP1, meer laten lopen
+    "breakeven_r": 0.65,       # sneller breakeven na 0.65R winst
+    "compound_decay": 0.85,    # compound verlagen na verliesweek
+    # ── Verliesweek-bescherming ────────────────────────────────────
+    "weekly_loss_threshold": 0.015,   # -1.5% deze week → risico verlagen
+    "weekly_loss_risk_scale": 0.55,   # risico → 55% bij verliesweek
+    "loss_day_filter": True,          # na 2 verlies-dagen: alleen A/B/F signalen
+}
+
+# ─────────────────────────────────────────────────────────────────
+# V20 PARAMETERS (Stabiel — FTMO-safe, reset elke 3 weken)
+# ─────────────────────────────────────────────────────────────────
+
+V20_CFG: dict = {
+    **V19_CFG,
+    # ── Maandelijks winstdoel ──────────────────────────────────────
+    "monthly_profit_target": 40_000.0,
+    "monthly_min_target":    20_000.0,
+    # ── 3-weken reset systeem ─────────────────────────────────────
+    "reset_weeks":   3,
+    "reset_capital": 160_000.0,
 }
 
 # Signal prioriteit
@@ -465,17 +507,20 @@ class StrategyEngine:
             if macd_xu and e9 > e21 and rsi_lo <= rsi14 <= rsi_hi - 3 and h4sl > 0:
                 sigs.append(("long", "B_MACDCROSS", risk_b * sent_mult_long, tp1r, tp2r, tp3r))
 
-            if (e9 > e21 > e50 and 50 <= rsi14 <= 67 and macdh > 0
-                    and h4sl > 0.1 and rsi_rec and h4reg in ("STERK_BULL", "BULL")):
+            # C_MOMENTUM: alleen STERK_BULL + hogere ADX + sterkere momentum
+            if (e9 > e21 > e50 and 50 <= rsi14 <= 65 and macdh > 0.5
+                    and h4sl > 0.3 and rsi_rec and h4reg == "STERK_BULL" and adx > 20):
                 sigs.append(("long", "C_MOMENTUM", risk_b * sent_mult_long, tp1r, tp2r, tp3r))
 
-            if (h4reg == "STERK_BULL" and -0.3 <= dist21 <= 0.9
-                    and cl > e21 and 50 <= rsi14 <= 63 and e9 > e21 and macdh > -2.0):
+            # D_PULLBACK: schonere pullback range (dichter bij EMA21)
+            if (h4reg == "STERK_BULL" and -0.2 <= dist21 <= 0.6
+                    and cl > e21 and 50 <= rsi14 <= 61 and e9 > e21 and macdh > -0.5):
                 sigs.append(("long", "D_PULLBACK", risk_c * sent_mult_long, tp1r, tp2r, tp3r))
 
-            if (bos_b and cl > e21 and 52 <= rsi14 <= 70
-                    and adx > 18 and h4reg in ("STERK_BULL", "BULL")):
-                sigs.append(("long", "E_BOS", risk_b * sent_mult_long, tp1r * 0.9, tp2r, tp3r * 0.9))
+            # E_BOS: risk_c (was risk_b) + strengere ADX-filter
+            if (bos_b and cl > e21 and 53 <= rsi14 <= 68
+                    and adx > 22 and h4reg in ("STERK_BULL", "BULL")):
+                sigs.append(("long", "E_BOS", risk_c * sent_mult_long, tp1r * 0.9, tp2r, tp3r * 0.9))
 
             if (mss_b and 50 <= rsi14 <= 65 and cl > e21
                     and h4reg in ("STERK_BULL", "BULL") and h4sl > 0):
@@ -499,17 +544,20 @@ class StrategyEngine:
             if macd_xd and e9 < e21 and rsi_lo + 3 <= rsi14 <= rsi_hi and h4sl < 0:
                 sigs.append(("short", "B_MACDCROSS", risk_b * sent_mult_short, tp1r, tp2r, tp3r))
 
-            if (e9 < e21 < e50 and 33 <= rsi14 <= rsi_hi and macdh < 0
-                    and h4sl < -0.1 and h4reg in ("STERK_BEAR", "BEAR")):
+            # C_MOMENTUM: alleen STERK_BEAR + hogere ADX + sterkere neerwaartse momentum
+            if (e9 < e21 < e50 and 35 <= rsi14 <= rsi_hi and macdh < -0.5
+                    and h4sl < -0.3 and h4reg == "STERK_BEAR" and adx > 20):
                 sigs.append(("short", "C_MOMENTUM", risk_b * sent_mult_short, tp1r, tp2r, tp3r))
 
-            if (h4reg == "STERK_BEAR" and -0.9 <= dist21 <= 0.3
-                    and cl < e21 and 37 <= rsi14 <= rsi_hi and e9 < e21 and macdh < 2.0):
+            # D_PULLBACK: schonere pullback range (dichter bij EMA21)
+            if (h4reg == "STERK_BEAR" and -0.6 <= dist21 <= 0.2
+                    and cl < e21 and 39 <= rsi14 <= rsi_hi and e9 < e21 and macdh < 0.5):
                 sigs.append(("short", "D_PULLBACK", risk_c * sent_mult_short, tp1r, tp2r, tp3r))
 
-            if (bos_be and cl < e21 and rsi_lo <= rsi14 <= rsi_hi
-                    and adx > 18 and h4reg in ("STERK_BEAR", "BEAR")):
-                sigs.append(("short", "E_BOS", risk_b * sent_mult_short, tp1r * 0.9, tp2r, tp3r * 0.9))
+            # E_BOS: risk_c (was risk_b) + strengere ADX-filter
+            if (bos_be and cl < e21 and rsi_lo <= rsi14 <= rsi_hi - 2
+                    and adx > 22 and h4reg in ("STERK_BEAR", "BEAR")):
+                sigs.append(("short", "E_BOS", risk_c * sent_mult_short, tp1r * 0.9, tp2r, tp3r * 0.9))
 
             if (mss_be and 35 <= rsi14 <= rsi_hi and cl < e21
                     and h4reg in ("STERK_BEAR", "BEAR") and h4sl < 0):
@@ -565,7 +613,7 @@ class StrategyEngine:
             f"Conf={confidence:.0%}"
         )
 
-        ts = bar.name if hasattr(bar.name, "to_pydatetime") else datetime.utcnow()
+        ts = bar.name if hasattr(bar.name, "to_pydatetime") else datetime.now(timezone.utc)
         if hasattr(ts, "to_pydatetime"):
             ts = ts.to_pydatetime()
 
@@ -607,23 +655,6 @@ class StrategyEngine:
             },
         )
 
-    def calculate_position_size(
-        self,
-        capital: float,
-        risk_pct: float,
-        entry: float,
-        stop_loss: float,
-        lot_size: float = 100.0,
-        point_value: float = 1.0,
-    ) -> float:
-        """Berekent lot-grootte op basis van risk percentage."""
-        risk_usd = capital * risk_pct
-        sl_dist = abs(entry - stop_loss)
-        if sl_dist <= 0:
-            return 0.01
-        lots = risk_usd / (sl_dist * lot_size * point_value)
-        return round(max(0.01, min(lots, 10.0)), 2)
-
     def get_session(self, dt: datetime) -> str:
         """Geeft sessie terug op basis van UTC uur (compatibel met V16)."""
         uur = dt.hour
@@ -642,13 +673,15 @@ class StrategyEngine:
 # ─────────────────────────────────────────────────────────────────
 
 _engine_instance: Optional[StrategyEngine] = None
+_engine_lock = threading.Lock()
 
 
 def get_engine(cfg_override: dict | None = None) -> StrategyEngine:
     """Geeft de singleton StrategyEngine terug. cfg_override wordt samengevouwen met DEFAULT_CFG."""
     global _engine_instance
-    if _engine_instance is None:
-        _engine_instance = StrategyEngine()
-    if cfg_override:
-        _engine_instance.cfg = {**_engine_instance.cfg, **cfg_override}
-    return _engine_instance
+    with _engine_lock:
+        if _engine_instance is None:
+            _engine_instance = StrategyEngine()
+        if cfg_override:
+            _engine_instance.cfg = {**_engine_instance.cfg, **cfg_override}
+        return _engine_instance

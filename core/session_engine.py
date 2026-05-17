@@ -77,7 +77,7 @@ class SessionEngine:
 
     Gebruik:
         se = SessionEngine()
-        info = se.get_session_info(datetime.utcnow())
+        info = se.get_session_info(datetime.now(timezone.utc))
         if info.is_valid_for_trading:
             ...
     """
@@ -111,7 +111,7 @@ class SessionEngine:
     def get_session_info(self, dt: Optional[datetime] = None) -> SessionInfo:
         """
         Geeft volledige sessie-informatie voor een gegeven UTC datetime.
-        Gebruikt datetime.utcnow() als dt=None.
+        Gebruikt datetime.now(timezone.utc) als dt=None.
         """
         if dt is None:
             dt = datetime.now(timezone.utc)

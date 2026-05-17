@@ -18,7 +18,7 @@ import logging
 import math
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -227,8 +227,8 @@ class OptimizerService:
 
     async def _run_job(self, job: OptimizerJob) -> None:
         job.status = "running"
-        job.started_at = datetime.utcnow()
-        start_time = datetime.utcnow()
+        job.started_at = datetime.now(timezone.utc)
+        start_time = datetime.now(timezone.utc)
 
         try:
             job.message = "Marktdata ophalen..."
@@ -277,7 +277,7 @@ class OptimizerService:
             for rank, r in enumerate(valid, 1):
                 r.rank = rank
 
-            duration = (datetime.utcnow() - start_time).total_seconds()
+            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
             best_params = valid[0].params if valid else DEFAULT_CFG.copy()
 
             summary = self._build_summary(valid, job.request)
@@ -288,7 +288,7 @@ class OptimizerService:
                 results=valid,
                 total_combinations_tested=len(results),
                 duration_seconds=duration,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
                 summary=summary,
             )
 
@@ -296,10 +296,10 @@ class OptimizerService:
             job.status = "completed"
             job.progress = 1.0
             job.message = f"Klaar: {len(valid)} geldige parametersets gevonden"
-            job.finished_at = datetime.utcnow()
+            job.finished_at = datetime.now(timezone.utc)
 
             self._save_result(opt_result)
-            self._history.append({"job_id": job.job_id, "completed_at": datetime.utcnow().isoformat(), "summary": summary})
+            self._history.append({"job_id": job.job_id, "completed_at": datetime.now(timezone.utc).isoformat(), "summary": summary})
 
             logger.info(
                 "Optimizer job %s klaar: %d resultaten in %.0fs",
@@ -309,7 +309,7 @@ class OptimizerService:
         except Exception as exc:
             job.status = "failed"
             job.error = str(exc)
-            job.finished_at = datetime.utcnow()
+            job.finished_at = datetime.now(timezone.utc)
             logger.exception("Optimizer job %s mislukt: %s", job.job_id, exc)
 
     # ─────────────────────────────────────────────────────────────
@@ -511,7 +511,8 @@ class OptimizerService:
             if "volume" not in df.columns:
                 df["volume"] = 0.0
             df["spread"] = 0.0
-            df.index = pd.to_datetime(df.index).tz_localize(None)
+            idx = pd.to_datetime(df.index)
+            df.index = idx.tz_convert(None) if idx.tz is not None else idx
             df = df[["open", "high", "low", "close", "volume", "spread"]]
             mask = (df.index.date >= start_date) & (df.index.date <= end_date)
             return df[mask].sort_index()

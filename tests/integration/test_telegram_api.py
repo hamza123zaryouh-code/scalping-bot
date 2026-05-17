@@ -74,3 +74,20 @@ def test_quick_backtest_endpoint_uses_backend_service(api_client, monkeypatch):
     response = api_client.post("/api/v1/telegram/backtest/quick-run", json=payload, headers=_headers())
     assert response.status_code == 200
     assert response.json()["data"]["summary"] == "Quick Backtest klaar"
+
+
+def test_compare_backtest_endpoint_uses_service(api_client, monkeypatch):
+    from backend.api.routes import telegram as telegram_route
+
+    monkeypatch.setattr(
+        telegram_route._service,
+        "compare_strategy_versions",
+        lambda: {
+            "summary": "Compare Baseline vs Latest Backtest",
+            "data": {"baseline": {"pf": 1.4}, "latest": {"profit_factor": 1.5}},
+        },
+    )
+
+    response = api_client.get("/api/v1/telegram/backtest/compare", headers=_headers())
+    assert response.status_code == 200
+    assert response.json()["data"]["summary"] == "Compare Baseline vs Latest Backtest"

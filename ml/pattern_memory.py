@@ -17,7 +17,7 @@ import logging
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -112,7 +112,7 @@ class SetupPattern:
             total_pnl=d.get("total_pnl", 0.0),
             avg_rr=d.get("avg_rr", 0.0),
             avg_holding_minutes=d.get("avg_holding_minutes", 0.0),
-            last_updated=datetime.fromisoformat(d.get("last_updated", datetime.utcnow().isoformat())),
+            last_updated=datetime.fromisoformat(d.get("last_updated", datetime.now(timezone.utc).isoformat())),
         )
 
 
@@ -190,7 +190,7 @@ class PatternMemory:
         n = pattern.total_trades
         pattern.avg_rr = ((pattern.avg_rr * (n - 1)) + rr) / n
         pattern.avg_holding_minutes = ((pattern.avg_holding_minutes * (n - 1)) + holding_minutes) / n
-        pattern.last_updated = datetime.utcnow()
+        pattern.last_updated = datetime.now(timezone.utc)
 
         self._save()
         logger.debug(

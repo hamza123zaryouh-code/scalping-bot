@@ -23,7 +23,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -163,7 +163,7 @@ class ConfigWatcher:
             with self._lock:
                 self._config = new_config
                 self._last_mtime = mtime
-                self._last_loaded = datetime.utcnow()
+                self._last_loaded = datetime.now(timezone.utc)
             return True
         except Exception as e:
             logger.error("Config laden mislukt (%s): %s", self._path, e)
@@ -293,6 +293,7 @@ class StrategyConfigManager:
         self._ensure_config_exists()
         self._watcher = ConfigWatcher(self._path, auto_start=False)
         self._watcher.on_change(self._on_config_change)
+        self._on_config_change(self._watcher.get_config())
 
     def start(self) -> None:
         if self._watcher:
@@ -327,16 +328,22 @@ class StrategyConfigManager:
 
     def _on_config_change(self, new_cfg: dict) -> None:
         with self._lock:
-            for key, default in self.DEFAULT_STRATEGY_CFG.items():
-                if key in new_cfg:
-                    val = new_cfg[key]
-                    expected_type = type(default)
+            # Start met defaults, dan overschrijf met alle waarden uit het bestand
+            merged = dict(self.DEFAULT_STRATEGY_CFG)
+            for key, val in new_cfg.items():
+                if key.startswith("_"):
+                    continue  # sla comments/metadata sleutels over
+                # Type-cast op basis van default type als de sleutel bekend is
+                default = self.DEFAULT_STRATEGY_CFG.get(key)
+                if default is not None:
                     try:
-                        self._cfg[key] = expected_type(val)
+                        val = type(default)(val)
                     except (TypeError, ValueError):
-                        self._cfg[key] = default
+                        val = default
+                merged[key] = val
+            self._cfg = merged
             self._reload_count += 1
-            self._last_reload = datetime.utcnow()
+            self._last_reload = datetime.now(timezone.utc)
         logger.info("Strategy config bijgewerkt (reload #%d)", self._reload_count)
 
     def _ensure_config_exists(self) -> None:

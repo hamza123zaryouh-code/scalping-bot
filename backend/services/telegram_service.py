@@ -26,7 +26,6 @@ REPORTS_DIR = Path("reports")
 
 FTMO_MONTHLY_TARGET = 8_000.0
 _DANGEROUS_ACTIONS = {"emergency_stop", "close_all_positions"}
-_BACKTEST_SERVICE = BacktestService()
 
 
 class TelegramService:
@@ -35,14 +34,15 @@ class TelegramService:
         self._memory = MemoryLayer(load_settings().database_url)
         self._risk = RiskService()
         self._signals = SignalService()
-        self._backtests = _BACKTEST_SERVICE
+        self._backtests = BacktestService()
 
     def get_status_overview(self) -> dict[str, Any]:
         state = self._load_state()
         control = self._memory.get_bot_control_state()
         history = self._trade_history(limit=5000)
-        account = state.get("balance", self._settings.starting_capital)
-        equity = state.get("equity", account)
+        runtime = self._memory.get_runtime_state("engine_status") or {}
+        account = state.get("balance") or runtime.get("balance") or self._settings.starting_capital
+        equity = state.get("equity") or runtime.get("equity") or account
         positions = state.get("open_positions", [])
         floating_pnl = round(sum(float(p.get("profit", 0.0)) for p in positions), 2)
         daily_pnl = self._period_pnl(history, "D")
@@ -205,7 +205,7 @@ class TelegramService:
             ),
             "drawdown": (
                 f"Drawdown Check\nHuidige drawdown: {self._money(drawdown)} ({drawdown_pct:.2f}%)\n"
-                f"FTMO limiet: 10.00%",
+                f"Daglimiet bot: €6.000 | Totaal: 10.00% (€16.000)",
                 {"drawdown": round(drawdown, 2), "drawdown_pct": round(drawdown_pct, 2)},
             ),
             "loss_streak": (
@@ -261,13 +261,17 @@ class TelegramService:
             starting_capital=self._settings.starting_capital,
             symbol="XAUUSD",
         )
-        result = self._backtests.run(request)
+        try:
+            result = self._backtests.run(request)
+        except Exception as exc:
+            logger.exception("Quick backtest mislukt")
+            return {"summary": f"Backtest mislukt: {exc}", "result": {}}
         self._memory.set_runtime_state(
             "last_backtest",
             {
                 "task_id": result.task_id,
                 "metrics": result.metrics.model_dump(),
-                "ran_at": datetime.utcnow().isoformat(),
+                "ran_at": datetime.now(timezone.utc).isoformat(),
             },
         )
         self._log_action(
@@ -300,21 +304,33 @@ class TelegramService:
             "data": latest,
         }
 
-    def compare_v16_vs_v17(self) -> dict[str, Any]:
-        v16 = self._best_v16_summary()
-        v17 = self._backtests.get_history()[0] if self._backtests.get_history() else None
-        if not v16 or not v17:
-            return {"summary": "Vergelijking V16 vs V17 nog niet beschikbaar.", "data": {}}
+    def compare_strategy_versions(self) -> dict[str, Any]:
+        baseline = self._best_v16_summary()
+        latest = self._backtests.get_history()[0] if self._backtests.get_history() else None
+        if not baseline or not latest:
+            return {"summary": "Vergelijking baseline vs laatste backtest nog niet beschikbaar.", "data": {}}
 
         summary = "\n".join(
             [
-                "Compare V16 vs V17",
-                f"V16 best: {v16.get('variant', 'unknown')} | PF {float(v16.get('pf', 0.0)):.2f} | DD {float(v16.get('max_dd', 0.0)):.2f}%",
-                f"V17 latest: PF {float(v17.get('profit_factor', 0.0)):.2f} | DD {float(v17.get('max_drawdown_pct', 0.0)):.2f}%",
-                f"PnL/Return: V16 {self._money(v16.get('pnl_eur', 0.0))} | V17 {float(v17.get('total_return_pct', 0.0)):.2f}%",
+                "Compare Baseline vs Latest Backtest",
+                f"Baseline: {baseline.get('variant', 'unknown')} | PF {float(baseline.get('pf', 0.0)):.2f} | DD {float(baseline.get('max_dd', 0.0)):.2f}%",
+                f"Latest: PF {float(latest.get('profit_factor', 0.0)):.2f} | DD {float(latest.get('max_drawdown_pct', 0.0)):.2f}%",
+                f"PnL/Return: Baseline {self._money(baseline.get('pnl_eur', 0.0))} | Latest {float(latest.get('total_return_pct', 0.0)):.2f}%",
             ]
         )
-        return {"summary": summary, "data": {"v16": v16, "v17": v17}}
+        return {
+            "summary": summary,
+            "data": {
+                "baseline": baseline,
+                "latest": latest,
+                "v17": baseline,
+                "v18": latest,
+            },
+        }
+
+    def compare_v16_vs_v17(self) -> dict[str, Any]:
+        """Backward-compatible alias for older callers."""
+        return self.compare_strategy_versions()
 
     def get_equity_curve_summary(self) -> dict[str, Any]:
         latest = self.get_latest_backtest_result()["data"]
@@ -334,7 +350,7 @@ class TelegramService:
         }
 
     def get_memory_snapshot(self, section: str) -> dict[str, Any]:
-        runtime = self._memory.get_runtime_state("runtime_state") or {}
+        runtime = self._memory.get_runtime_state("engine_status") or {}
         training = self._memory.get_runtime_state("last_training") or {}
         optimizer = self._memory.get_runtime_state("optimizer_state") or {}
         model_history = self._memory.model_history()
@@ -405,7 +421,7 @@ class TelegramService:
     def export_trade_log(self, telegram_user_id: str, telegram_username: str | None = None) -> dict[str, Any]:
         history = self._trade_history(limit=10000)
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        filename = f"telegram_trade_log_{datetime.utcnow():%Y%m%d_%H%M%S}.csv"
+        filename = f"telegram_trade_log_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.csv"
         path = REPORTS_DIR / filename
         history.to_csv(path, index=False)
         self._log_action(
@@ -546,6 +562,6 @@ class TelegramService:
     @staticmethod
     def _money(value: Any) -> str:
         try:
-            return f"${float(value):,.2f}"
+            return f"€{float(value):,.2f}"
         except Exception:
-            return "$0.00"
+            return "€0.00"

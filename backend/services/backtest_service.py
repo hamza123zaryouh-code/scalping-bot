@@ -19,7 +19,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -28,13 +28,16 @@ import pandas as pd
 
 from backend.api.schemas.backtest import BacktestMetrics, BacktestRequest, BacktestResult, TradeRecord, WeeklySummary
 from backend.api.schemas.common import TaskStatus
+from core.config_watcher import StrategyConfigManager
 from core.strategy_engine import StrategyEngine, DEFAULT_CFG, V18_CFG
 
 logger = logging.getLogger(__name__)
 
 FTMO_STARTING_CAPITAL = 160_000.0
-FTMO_DAG_EUR = 2_000.0
-FTMO_DD_PCT = 0.06
+FTMO_DAG_EUR = 8_000.0    # 5% van €160k — echte FTMO daggrens
+FTMO_DD_PCT = 0.10        # 10% max totaal verlies vanaf startkapitaal (echte FTMO regel)
+
+_EUR_USD_RATE = 1.10      # EUR/USD rate voor lot-grootte conversie (update periodiek)
 
 RESULTS_DIR = Path("results/backtests")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -71,6 +74,7 @@ class BacktestService:
 
     def __init__(self) -> None:
         self._engine = StrategyEngine()
+        self._strategy_config = StrategyConfigManager()
         self._tasks: dict[str, StoredBacktest] = {}
         self._progress: dict[str, BacktestProgress] = {}
         self._history: list[dict] = []
@@ -159,8 +163,8 @@ class BacktestService:
                         "profit_factor": metrics.profit_factor,
                         "max_drawdown_pct": metrics.max_drawdown_pct,
                     },
-                    started_at=datetime.utcnow(),
-                    finished_at=datetime.utcnow(),
+                    started_at=datetime.now(timezone.utc),
+                    finished_at=datetime.now(timezone.utc),
                 ),
             )
 
@@ -175,7 +179,7 @@ class BacktestService:
                 "profit_factor": metrics.profit_factor,
                 "total_return_pct": metrics.total_return_pct,
                 "max_drawdown_pct": metrics.max_drawdown_pct,
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
             })
 
             logger.info(
@@ -201,7 +205,7 @@ class BacktestService:
         prog = BacktestProgress(
             task_id=task_id,
             status="pending",
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         self._progress[task_id] = prog
 
@@ -226,12 +230,12 @@ class BacktestService:
             prog.status = "completed"
             prog.progress = 1.0
             prog.message = f"Voltooid: {result.metrics.total_trades} trades"
-            prog.finished_at = datetime.utcnow()
+            prog.finished_at = datetime.now(timezone.utc)
         except Exception as e:
             prog.status = "failed"
             prog.error = str(e)
             prog.message = f"Fout: {e}"
-            prog.finished_at = datetime.utcnow()
+            prog.finished_at = datetime.now(timezone.utc)
             logger.error("Async backtest mislukt [%s]: %s", task_id, e)
 
     def status(self, task_id: str) -> Optional[TaskStatus]:
@@ -328,16 +332,16 @@ class BacktestService:
 
     def _build_cfg(self, req: BacktestRequest, use_v18: bool = False) -> dict:
         """Bouw strategie config vanuit BacktestRequest."""
-        base = dict(V18_CFG if use_v18 else DEFAULT_CFG)
-
-        # Override met request parameters indien opgegeven
+        if use_v18:
+            base = dict(V18_CFG)
+        else:
+            base = self._strategy_config.get_strategy_cfg() or dict(DEFAULT_CFG)
         params = getattr(req, "strategy_params", None) or {}
         if isinstance(params, dict):
-            source = V18_CFG if use_v18 else DEFAULT_CFG
-            for key in source:
-                if key in params:
-                    base[key] = params[key]
-
+            for key, value in params.items():
+                if str(key).startswith("_"):
+                    continue
+                base[key] = value
         return base
 
     def _run_backtest_engine(
@@ -346,7 +350,7 @@ class BacktestService:
         cfg: dict,
         starting_capital: float,
         ftmo_floor_pct: float = FTMO_DD_PCT,
-        ftmo_balance_based: bool = False,
+        ftmo_balance_based: bool = True,  # True = correcte FTMO regel (max 10% van startkapitaal)
     ) -> tuple[list[dict], float]:
         """
         V16 backtest engine — exact dezelfde logica als strategy_v16.py.
@@ -361,17 +365,33 @@ class BacktestService:
         trail_on = cfg.get("trailing", True)
         weekly_compound = cfg.get("weekly_compound", False)
         compound_boost = cfg.get("compound_boost", 1.10)
-        max_lot_size = float(cfg.get("max_lot_size", 9999.0))  # FTMO lot cap
-        ftmo_dag_eur = starting_capital * 0.0125  # 1.25% per dag
+        compound_decay = float(cfg.get("compound_decay", 0.95))
+        max_lot_size = float(cfg.get("max_lot_size", 4.0))
+        # FTMO dagelijkse limiet (default €6,000 = 3.75% van €160k)
+        ftmo_dag_eur = float(cfg.get("max_daily_loss_eur", 6_000.0))
         # balance_based: max verlies t.o.v. startkapitaal (echte FTMO-regel)
         # peak_based: max verlies t.o.v. equity-piek (conservatief, default)
         ftmo_tot_eur = starting_capital * ftmo_floor_pct
         ftmo_floor_eur = starting_capital * (1.0 - ftmo_floor_pct)  # voor balance_based
+        # Verliesweek- en verliesdag-bescherming
+        weekly_loss_threshold = float(cfg.get("weekly_loss_threshold", 0.0))
+        weekly_loss_risk_scale = float(cfg.get("weekly_loss_risk_scale", 1.0))
+        loss_day_filter = bool(cfg.get("loss_day_filter", False))
+        # V20: maanddoel + 3-weken reset
+        monthly_profit_target = float(cfg.get("monthly_profit_target", 0.0))  # 0 = uitgeschakeld
+        reset_weeks           = int(cfg.get("reset_weeks", 0))                # 0 = geen reset
+        reset_capital_amount  = float(cfg.get("reset_capital", starting_capital))
 
         kap = float(starting_capital)
         piek = kap
         trs: list[dict] = []
         dag: dict[date, dict] = {}
+
+        # V20: banked profit (winst van eerdere reset-cycli) + maand-tracking
+        _banked_profit: float = 0.0
+        _next_reset_date: Optional[date] = None  # wordt gezet bij eerste bar
+        _current_month_str: str = ""
+        _month_start_equity: float = kap  # equity bij begin van maand (banked=0 bij start)
 
         ip = False
         entry = sl = tp1 = tp2 = tp3 = None
@@ -379,13 +399,16 @@ class BacktestService:
         risk_rem = 0.0
         tp1_hit = tp2_hit = False
         last_i = -999
-        cum_equity = kap
+        cum_equity = _banked_profit + kap
         _open_lot_size = 0.01
 
         # Weekly compound tracking
         _week_start_equity = kap
         _current_week: Optional[int] = None
         _compound_multiplier = 1.0
+        # Weekly & daily PnL tracking voor verliesbescherming
+        _week_pnl: dict[int, float] = {}   # week_num → gerealiseerde PnL deze week
+        _day_net_pnl: dict[date, float] = {}  # datum → netto PnL die dag
 
         for i in range(120, len(df)):
             b = df.iloc[i]
@@ -396,6 +419,38 @@ class BacktestService:
             if bar_date not in dag:
                 dag[bar_date] = {"loss": 0.0, "n": 0, "sl": 0}
 
+            # V20: initialiseer reset-datum bij eerste bar
+            if reset_weeks > 0 and _next_reset_date is None:
+                _next_reset_date = bar_date + timedelta(weeks=reset_weeks)
+
+            # V20: maand-tracking
+            bar_month_str = bar_date.strftime("%Y-%m")
+            if bar_month_str != _current_month_str:
+                _current_month_str = bar_month_str
+                _month_start_equity = _banked_profit + kap
+
+            # V20: 3-weken reset
+            if reset_weeks > 0 and _next_reset_date is not None and bar_date >= _next_reset_date:
+                if ip:
+                    ep = float(b["close"])
+                    sl_dist_r = abs(entry - sl)
+                    pnl_r = risk_rem * ((ep - entry) / max(sl_dist_r, 0.001) * richting)
+                    kap += pnl_r
+                    cum_equity = _banked_profit + kap
+                    trs.append(self._make_tr(ot, b.name, richting, entry, ep, pnl_r, "RESET", sig_type, sl, tp1, cum_equity, _open_lot_size))
+                    ip = False
+                # Bankeer alles boven reset_capital_amount
+                _banked_profit += max(0.0, kap - reset_capital_amount)
+                kap = min(kap, reset_capital_amount)
+                piek = kap
+                _compound_multiplier = 1.0
+                _week_pnl.clear()
+                _day_net_pnl.clear()
+                _current_week = None
+                _week_start_equity = kap
+                _month_start_equity = _banked_profit + kap
+                _next_reset_date = bar_date + timedelta(weeks=reset_weeks)
+
             # Weekly compound boost: na elke winstgevende week → multiplier omhoog
             if weekly_compound:
                 bar_week = b.name.isocalendar()[1]
@@ -405,9 +460,9 @@ class BacktestService:
                 elif bar_week != _current_week:
                     # Nieuwe week begint
                     if kap > _week_start_equity:
-                        _compound_multiplier = min(_compound_multiplier * compound_boost, 1.50)
+                        _compound_multiplier = min(_compound_multiplier * compound_boost, 1.30)
                     else:
-                        _compound_multiplier = max(_compound_multiplier * 0.95, 1.0)
+                        _compound_multiplier = max(_compound_multiplier * compound_decay, 1.0)
                     _current_week = bar_week
                     _week_start_equity = kap
 
@@ -422,7 +477,7 @@ class BacktestService:
                     ep = float(b["close"])
                     pnl = richting * (ep - entry) / max(abs(entry - sl), 0.001) * risk_rem
                     kap += pnl
-                    cum_equity = kap
+                    cum_equity = _banked_profit + kap
                     trs.append(self._make_tr(ot, b.name, richting, entry, ep, pnl, "FAIL", sig_type, sl, tp1, cum_equity, _open_lot_size))
                     ip = False
                 break
@@ -461,10 +516,12 @@ class BacktestService:
                             pnl_tp1 = tp1_pct * risk_rem * ((tp1 - entry) / sl_dist * richting)
                             kap += pnl_tp1
                             if kap > piek: piek = kap
-                            cum_equity = kap
+                            cum_equity = _banked_profit + kap
                             trs.append(self._make_tr(ot, b.name, richting, entry, tp1, pnl_tp1, "TP1", sig_type, sl, tp1, cum_equity, _open_lot_size))
                             risk_rem *= (1.0 - tp1_pct)
                             tp1_hit = True
+                            _day_net_pnl[bar_date] = _day_net_pnl.get(bar_date, 0.0) + pnl_tp1
+                            if _current_week: _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_tp1
 
                 # TP2
                 if tp1_hit and not tp2_hit:
@@ -473,10 +530,12 @@ class BacktestService:
                         pnl_tp2 = tp2_frac * risk_rem * ((tp2 - entry) / sl_dist * richting)
                         kap += pnl_tp2
                         if kap > piek: piek = kap
-                        cum_equity = kap
+                        cum_equity = _banked_profit + kap
                         trs.append(self._make_tr(ot, b.name, richting, entry, tp2, pnl_tp2, "TP2", sig_type, sl, tp2, cum_equity, _open_lot_size))
                         risk_rem *= (1.0 - tp2_frac)
                         tp2_hit = True
+                        _day_net_pnl[bar_date] = _day_net_pnl.get(bar_date, 0.0) + pnl_tp2
+                        if _current_week: _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_tp2
 
                 # TP3
                 if tp1_hit and tp2_hit:
@@ -484,9 +543,11 @@ class BacktestService:
                         pnl_tp3 = risk_rem * ((tp3 - entry) / sl_dist * richting)
                         kap += pnl_tp3
                         if kap > piek: piek = kap
-                        cum_equity = kap
+                        cum_equity = _banked_profit + kap
                         trs.append(self._make_tr(ot, b.name, richting, entry, tp3, pnl_tp3, "TP3", sig_type, sl, tp3, cum_equity, _open_lot_size))
                         ip = False
+                        _day_net_pnl[bar_date] = _day_net_pnl.get(bar_date, 0.0) + pnl_tp3
+                        if _current_week: _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_tp3
                         continue
 
                 # SL check
@@ -501,12 +562,20 @@ class BacktestService:
                         dag[bar_date]["sl"] += 1
                     kap += pnl_sl
                     if kap > piek: piek = kap
-                    cum_equity = kap
+                    cum_equity = _banked_profit + kap
                     trs.append(self._make_tr(ot, b.name, richting, entry, sl, pnl_sl, "SL", sig_type, sl, tp1, cum_equity, _open_lot_size))
                     ip = False
+                    _day_net_pnl[bar_date] = _day_net_pnl.get(bar_date, 0.0) + pnl_sl
+                    if _current_week: _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_sl
 
             if ip:
                 continue
+
+            # V20: stop nieuwe trades als maanddoel bereikt
+            if monthly_profit_target > 0:
+                _month_pnl = (_banked_profit + kap) - _month_start_equity
+                if _month_pnl >= monthly_profit_target:
+                    continue
 
             # Entry condities
             if dag[bar_date]["loss"] >= ftmo_dag_eur * 0.65: continue
@@ -518,8 +587,9 @@ class BacktestService:
             tier = self._engine.get_session(b.name.to_pydatetime())
             if tier == "blocked": continue
 
-            # Signaal genereren via UNIFIED STRATEGY ENGINE
+            # ── Signaal genereren ───────────────────────────────────
             signal = self._engine.generate_signal(df.iloc[max(0, i - 300):i + 1], cfg=cfg)
+
             if signal is None: continue
 
             sig_type = signal.signal_type
@@ -529,6 +599,14 @@ class BacktestService:
             # Standaard sessie: alleen A of B signalen
             if tier == "standard" and sig_type not in ("A_EMACROSS", "B_MACDCROSS"):
                 continue
+
+            # ── Verliesdag-filter: na 2 opeenvolgende verlies-dagen → alleen A/B/F ──
+            if loss_day_filter:
+                prev_days = sorted(d for d in _day_net_pnl if d < bar_date)[-2:]
+                if (len(prev_days) >= 2
+                        and all(_day_net_pnl[d] < 0 for d in prev_days)
+                        and sig_type not in ("A_EMACROSS", "B_MACDCROSS", "F_MSS")):
+                    continue
 
             # Drawdown risk scaling
             dd_pct = (piek - kap) / max(piek, 1)
@@ -540,6 +618,13 @@ class BacktestService:
             # Loss streak scaling
             recent_sl = sum(1 for t in trs[-4:] if t["result"] == "SL" and t["pnl"] < 0)
             if recent_sl >= 3: risk_pct *= 0.50
+
+            # ── Verliesweek-bescherming: risico verlagen als week al in de min zit ──
+            if weekly_loss_threshold > 0 and _current_week is not None:
+                _this_week_pnl = _week_pnl.get(_current_week, 0.0)
+                _week_loss_pct = _this_week_pnl / max(_week_start_equity, 1)
+                if _week_loss_pct < -weekly_loss_threshold:
+                    risk_pct *= weekly_loss_risk_scale
 
             richting = 1 if rich_str == "long" else -1
             cl_pr = float(b["close"])
@@ -564,14 +649,13 @@ class BacktestService:
 
             # Echte lotsize berekening — zelfde formule als live MT5 bot
             # XAUUSD: 1 lot = 100 oz, P&L = lot × 100 × ΔP (in USD)
-            # risk_eur → risk_usd via EUR/USD ≈ 1.10
-            _EUR_USD = 1.10
-            _risk_usd_mt5 = risk_usd * _EUR_USD
+            # risk_eur → risk_usd via _EUR_USD_RATE
+            _risk_usd_mt5 = risk_usd * _EUR_USD_RATE
             _raw_lot = _risk_usd_mt5 / (sl_dist * 100)
             _open_lot_size = round(max(min(_raw_lot, max_lot_size), 0.01), 2)
             # Als lot cap aanslaat: risk_rem aanpassen zodat P&L realistisch is
             if _raw_lot > max_lot_size:
-                risk_rem = (_open_lot_size * sl_dist * 100) / _EUR_USD
+                risk_rem = (_open_lot_size * sl_dist * 100) / _EUR_USD_RATE
 
         # Sluit open positie
         if ip and len(df) > 0:
@@ -579,10 +663,10 @@ class BacktestService:
             sl_dist = abs(entry - sl)
             pnl = risk_rem * ((ep - entry) / max(sl_dist, 0.001) * richting)
             kap += pnl
-            cum_equity = kap
+            cum_equity = _banked_profit + kap
             trs.append(self._make_tr(ot, df.index[-1], richting, entry, ep, pnl, "OPEN", sig_type, sl, tp1, cum_equity, _open_lot_size))
 
-        return trs, kap
+        return trs, _banked_profit + kap
 
     @staticmethod
     def _make_tr(ti, to, rich, entry, exit_p, pnl, result, stype, sl=0, tp1=0, cum_equity=0, lot_size=0.01) -> dict:
@@ -628,7 +712,7 @@ class BacktestService:
         else:
             challenge_days = 0
 
-        ftmo_passed = max_drawdown_pct < FTMO_DD_PCT * 100
+        ftmo_passed = max_drawdown_pct < FTMO_DD_PCT * 100  # < 10%
 
         return BacktestMetrics(
             total_trades=int(len(trades)),

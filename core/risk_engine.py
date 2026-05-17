@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from enum import Enum
 from typing import Optional
 
@@ -29,9 +29,9 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────
 
 FTMO_STARTING_CAPITAL = 160_000.0
-FTMO_DAILY_LOSS_LIMIT = 8_000.0       # €8k per dag
+FTMO_DAILY_LOSS_LIMIT = 6_000.0       # Interne daglimiet €6k per dag
 FTMO_TOTAL_LOSS_LIMIT = 16_000.0      # €16k totaal (10%)
-FTMO_DAILY_LOSS_PCT = 0.05            # 5% per dag
+FTMO_DAILY_LOSS_PCT = FTMO_DAILY_LOSS_LIMIT / FTMO_STARTING_CAPITAL
 FTMO_TOTAL_LOSS_PCT = 0.10            # 10% totaal
 
 # Interne limieten (conservatiever dan FTMO)
@@ -272,7 +272,7 @@ class CircuitBreaker:
         s = self._state
         s.circuit_breaker_active = True
         s.circuit_breaker_reason = CircuitBreakerReason.MANUAL_STOP
-        s.circuit_breaker_since = datetime.utcnow()
+        s.circuit_breaker_since = datetime.now(timezone.utc)
         s.can_trade = False
         logger.warning("MANUAL STOP geactiveerd: %s", reason)
 
@@ -334,10 +334,10 @@ class CircuitBreaker:
             return
 
         # Cooldown periode check
-        if s.cooldown_until and datetime.utcnow() < s.cooldown_until:
+        if s.cooldown_until and datetime.now(timezone.utc) < s.cooldown_until:
             s.can_trade = False
             return
-        elif s.cooldown_until and datetime.utcnow() >= s.cooldown_until:
+        elif s.cooldown_until and datetime.now(timezone.utc) >= s.cooldown_until:
             s.cooldown_until = None
             logger.info("Cooldown periode afgelopen — trading hervat")
 
@@ -377,7 +377,7 @@ class CircuitBreaker:
         # 5. Loss streak → cooldown
         if s.consecutive_losses >= self._loss_streak_limit and not block_trading:
             cooldown_minutes = 60 * s.consecutive_losses  # langer bij meer verliezen
-            s.cooldown_until = datetime.utcnow() + timedelta(minutes=cooldown_minutes)
+            s.cooldown_until = datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)
             reasons.append(CircuitBreakerReason.LOSS_STREAK)
             block_trading = True
             logger.warning(
@@ -429,7 +429,7 @@ class CircuitBreaker:
             s.circuit_breaker_active = True
             s.circuit_breaker_reason = reasons[0] if reasons else CircuitBreakerReason.NONE
             if s.circuit_breaker_since is None:
-                s.circuit_breaker_since = datetime.utcnow()
+                s.circuit_breaker_since = datetime.now(timezone.utc)
         else:
             s.can_trade = True
             s.circuit_breaker_active = False
