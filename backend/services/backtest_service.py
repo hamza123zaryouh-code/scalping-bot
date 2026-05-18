@@ -30,7 +30,7 @@ import pandas as pd
 from backend.api.schemas.backtest import BacktestMetrics, BacktestRequest, BacktestResult, TradeRecord, WeeklySummary
 from backend.api.schemas.common import TaskStatus
 from core.config_watcher import StrategyConfigManager
-from core.strategy_engine import DEFAULT_CFG, V18_CFG, StrategyEngine
+from core.strategy_engine import DEFAULT_CFG, V18_CFG, V21_CFG, V22_CFG, StrategyEngine, SYMBOL_SPECS, get_symbol_cfg
 
 logger = logging.getLogger(__name__)
 
@@ -414,6 +414,417 @@ class BacktestService:
                 base[key] = value
         return base
 
+    def _fetch_data_symbol(self, symbol: str, start_date, end_date) -> pd.DataFrame:
+        """Haalt H1 data op voor een willekeurig symbool via yfinance."""
+        spec = SYMBOL_SPECS.get(symbol, SYMBOL_SPECS["XAUUSD"])
+        ticker = spec["yf_ticker"]
+        try:
+            import yfinance as yf
+        except ImportError:
+            raise FileNotFoundError("yfinance niet beschikbaar")
+
+        start_with_buffer = pd.Timestamp(start_date) - pd.Timedelta(days=90)
+        end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1)
+
+        df = pd.DataFrame()
+        for attempt in range(3):
+            try:
+                cache_dir = YFINANCE_CACHE_DIR / f"{symbol}_{attempt}"
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    yf.set_tz_cache_location(str(cache_dir))
+                except AttributeError:
+                    pass
+                df = yf.download(ticker, start=start_with_buffer.strftime("%Y-%m-%d"),
+                                 end=end_ts.strftime("%Y-%m-%d"), interval="1h",
+                                 progress=False, auto_adjust=True)
+                if not df.empty:
+                    break
+            except Exception as e:
+                logger.warning("yfinance %s poging %d mislukt: %s", symbol, attempt + 1, e)
+
+        if df.empty:
+            logger.warning("Geen data voor %s — symbool overgeslagen.", symbol)
+            return pd.DataFrame()
+
+        df.columns = [c[0].lower() if isinstance(c, tuple) else c.lower() for c in df.columns]
+        df.index = pd.to_datetime(df.index, utc=True)
+        df = df[["open", "high", "low", "close", "volume"]].dropna()
+        logger.info("%s: %d H1 bars geladen", symbol, len(df))
+        return df
+
+    def _get_symbol_cfg(self, base_cfg: dict, symbol: str) -> dict:
+        return get_symbol_cfg(base_cfg, symbol)
+
+    def _calc_lot(self, risk_usd: float, sl_dist: float, symbol: str) -> float:
+        """Berekent lotgrootte op basis van risico en SL-afstand per symbool."""
+        spec = SYMBOL_SPECS.get(symbol, SYMBOL_SPECS["XAUUSD"])
+        raw = risk_usd / max(sl_dist * spec["lot_factor"], 1e-10)
+        return round(max(min(raw, spec["max_lot"]), 0.01), 2)
+
+    def run_multi_symbol(
+        self,
+        symbols: list[str],
+        start_date,
+        end_date,
+        starting_capital: float = 160_000.0,
+        cfg: dict | None = None,
+    ) -> tuple[list[dict], float]:
+        """
+        Multi-paar backtest: XAUUSD + EURUSD + GBPUSD op gedeeld kapitaal.
+        Retourneert (alle_trades, eindkapitaal).
+        """
+        if cfg is None:
+            cfg = dict(V22_CFG)
+
+        symbol_dfs: dict[str, pd.DataFrame] = {}
+        for sym in symbols:
+            raw = self._fetch_data_symbol(sym, start_date, end_date)
+            if raw.empty or len(raw) < 200:
+                logger.warning("%s: onvoldoende data, overgeslagen.", sym)
+                continue
+            feat = self._engine.prepare_features(raw)
+            if feat.empty:
+                continue
+            symbol_dfs[sym] = feat
+
+        if not symbol_dfs:
+            raise ValueError("Geen bruikbare data voor de geselecteerde symbolen.")
+
+        return self._run_multi_symbol_engine(symbol_dfs, cfg, starting_capital)
+
+    def _run_multi_symbol_engine(
+        self,
+        symbol_dfs: dict[str, pd.DataFrame],
+        cfg: dict,
+        starting_capital: float,
+    ) -> tuple[list[dict], float]:
+        """
+        Multi-paar backtest engine.
+        Gedeeld kapitaal, gedeelde dag/week-limieten, per-paar positiebeheer.
+        """
+        # ── Config parameters ──────────────────────────────────────
+        tp1_pct = cfg.get("tp1_pct", 0.20)
+        tp2_pct = cfg.get("tp2_pct", 0.30)
+        max_dag = cfg.get("max_dag", 4)
+        sl_dag_max = cfg.get("sl_dag_max", 2)
+        cool_h = cfg.get("cooldown_h", 0.5)
+        trail_on = cfg.get("trailing", True)
+        weekly_compound = cfg.get("weekly_compound", True)
+        compound_boost = float(cfg.get("compound_boost", 1.10))
+        compound_decay = float(cfg.get("compound_decay", 0.85))
+        ftmo_dag_eur = float(cfg.get("max_daily_loss_eur", 5_000.0))
+        ftmo_floor_eur = starting_capital * (1.0 - FTMO_DD_PCT)
+        soft_weekly_loss_threshold = float(cfg.get("soft_weekly_loss_threshold", 0.005))
+        soft_weekly_loss_risk_scale = float(cfg.get("soft_weekly_loss_risk_scale", 0.70))
+        weekly_loss_threshold = float(cfg.get("weekly_loss_threshold", 0.010))
+        weekly_loss_risk_scale = float(cfg.get("weekly_loss_risk_scale", 0.35))
+        weekly_loss_block_signals = {str(s) for s in cfg.get("weekly_loss_block_signals", ())}
+        weekly_stop_threshold = float(cfg.get("weekly_stop_threshold", 0.020))
+        daily_profit_lock_pct = float(cfg.get("daily_profit_lock_pct", 0.025))
+        daily_profit_lock_scale = float(cfg.get("daily_profit_lock_scale", 0.50))
+        loss_day_filter = bool(cfg.get("loss_day_filter", True))
+        monthly_profit_target = float(cfg.get("monthly_profit_target", 0.0))
+        max_concurrent = int(cfg.get("max_concurrent_positions", 2))
+
+        # ── Gedeeld kapitaal ──────────────────────────────────────
+        kap = float(starting_capital)
+        piek = kap
+        trs: list[dict] = []
+        dag: dict[date, dict] = {}
+        _day_net_pnl: dict[date, float] = {}
+        _week_pnl: dict[int, float] = {}
+        _week_start_eq = kap
+        _current_week: int | None = None
+        _compound_multiplier = 1.0
+        _current_month_str = ""
+        _month_start_equity = kap
+
+        # ── Per-paar toestand ─────────────────────────────────────
+        sym_state: dict[str, dict] = {}
+        for sym in symbol_dfs:
+            sym_state[sym] = {
+                "ip": False, "entry": 0.0, "sl": 0.0,
+                "tp1": 0.0, "tp2": 0.0, "tp3": 0.0,
+                "richting": 1, "sig_type": "", "ot": None,
+                "risk_rem": 0.0, "tp1_hit": False, "tp2_hit": False,
+                "last_ts": None, "lot_size": 0.01,
+            }
+
+        # ── Gesorteerde tijdlijn van alle bars ────────────────────
+        all_events: list[tuple] = []
+        for sym, df in symbol_dfs.items():
+            for idx in range(120, len(df)):
+                all_events.append((df.index[idx], sym, idx))
+        all_events.sort(key=lambda x: x[0])
+
+        tp2_frac_base = tp2_pct / max(tp2_pct + (1.0 - tp1_pct - tp2_pct), 1e-6)
+
+        for ts, sym, i in all_events:
+            df = symbol_dfs[sym]
+            b = df.iloc[i]
+            st = sym_state[sym]
+            bar_date = ts.date()
+
+            if bar_date not in dag:
+                dag[bar_date] = {"loss": 0.0, "n": 0, "sl": 0}
+
+            # ── Wekelijkse compound ────────────────────────────────
+            bar_week = ts.isocalendar()[1]
+            if _current_week is None:
+                _current_week = bar_week
+                _week_start_eq = kap
+            elif bar_week != _current_week:
+                if weekly_compound:
+                    if kap > _week_start_eq:
+                        _compound_multiplier = min(_compound_multiplier * compound_boost, 1.40)
+                    else:
+                        _compound_multiplier = max(_compound_multiplier * compound_decay, 1.0)
+                _current_week = bar_week
+                _week_start_eq = kap
+
+            # ── Maand-tracking ──────────────────────────────────────
+            bar_month = bar_date.strftime("%Y-%m")
+            if bar_month != _current_month_str:
+                _current_month_str = bar_month
+                _month_start_equity = kap
+
+            # ── FTMO check ─────────────────────────────────────────
+            if kap < ftmo_floor_eur:
+                if st["ip"]:
+                    ep = float(b["close"])
+                    sl_dist = abs(st["entry"] - st["sl"])
+                    pnl = st["richting"] * (ep - st["entry"]) / max(sl_dist, 1e-10) * st["risk_rem"]
+                    kap += pnl
+                    trs.append(self._make_tr(st["ot"], ts, st["richting"], st["entry"], ep,
+                                             pnl, "FAIL", st["sig_type"], st["sl"], st["tp1"], kap, st["lot_size"]))
+                    st["ip"] = False
+                break
+
+            # ── Beheer open positie voor dit paar ─────────────────
+            if st["ip"]:
+                hi = float(b["high"])
+                lo = float(b["low"])
+                cl = float(b["close"])
+                sl_dist = abs(st["entry"] - st["sl"])
+                if sl_dist <= 0:
+                    st["ip"] = False
+                    continue
+                r = st["richting"]
+                entry = st["entry"]
+
+                # Breakeven na TP1
+                be_r = cfg.get("breakeven_r", 0.55)
+                if st["tp1_hit"] and not st["tp2_hit"]:
+                    if r == 1 and st["sl"] < entry:
+                        st["sl"] = entry + 0.05 * sl_dist
+                    elif r == -1 and st["sl"] > entry:
+                        st["sl"] = entry - 0.05 * sl_dist
+
+                # Trailing stop na TP1
+                if trail_on and st["tp1_hit"]:
+                    float_pnl = r * (cl - entry) / sl_dist * st["risk_rem"]
+                    if float_pnl > 500 and not st["tp2_hit"]:
+                        new_sl = entry + r * 0.4 * sl_dist
+                        st["sl"] = max(st["sl"], new_sl) if r == 1 else min(st["sl"], new_sl)
+
+                # TP1
+                if not st["tp1_hit"]:
+                    if (r == 1 and hi >= st["tp1"]) or (r == -1 and lo <= st["tp1"]):
+                        if not ((r == 1 and lo <= st["sl"]) or (r == -1 and hi >= st["sl"])):
+                            pnl_tp1 = tp1_pct * st["risk_rem"] * ((st["tp1"] - entry) / sl_dist * r)
+                            kap += pnl_tp1
+                            piek = max(piek, kap)
+                            _day_net_pnl[bar_date] = _day_net_pnl.get(bar_date, 0.0) + pnl_tp1
+                            _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_tp1
+                            trs.append(self._make_tr(st["ot"], ts, r, entry, st["tp1"],
+                                                     pnl_tp1, "TP1", st["sig_type"], st["sl"], st["tp1"], kap, st["lot_size"]))
+                            st["risk_rem"] *= (1.0 - tp1_pct)
+                            st["tp1_hit"] = True
+
+                # TP2
+                if st["tp1_hit"] and not st["tp2_hit"]:
+                    if (r == 1 and hi >= st["tp2"]) or (r == -1 and lo <= st["tp2"]):
+                        pnl_tp2 = tp2_frac_base * st["risk_rem"] * ((st["tp2"] - entry) / sl_dist * r)
+                        kap += pnl_tp2
+                        piek = max(piek, kap)
+                        _day_net_pnl[bar_date] = _day_net_pnl.get(bar_date, 0.0) + pnl_tp2
+                        _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_tp2
+                        trs.append(self._make_tr(st["ot"], ts, r, entry, st["tp2"],
+                                                 pnl_tp2, "TP2", st["sig_type"], st["sl"], st["tp2"], kap, st["lot_size"]))
+                        st["risk_rem"] *= (1.0 - tp2_frac_base)
+                        st["tp2_hit"] = True
+
+                # TP3
+                if st["tp1_hit"] and st["tp2_hit"]:
+                    if (r == 1 and hi >= st["tp3"]) or (r == -1 and lo <= st["tp3"]):
+                        pnl_tp3 = st["risk_rem"] * ((st["tp3"] - entry) / sl_dist * r)
+                        kap += pnl_tp3
+                        piek = max(piek, kap)
+                        _day_net_pnl[bar_date] = _day_net_pnl.get(bar_date, 0.0) + pnl_tp3
+                        _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_tp3
+                        trs.append(self._make_tr(st["ot"], ts, r, entry, st["tp3"],
+                                                 pnl_tp3, "TP3", st["sig_type"], st["sl"], st["tp3"], kap, st["lot_size"]))
+                        st["ip"] = False
+                        continue
+
+                # SL check
+                hit_sl = (r == 1 and lo <= st["sl"]) or (r == -1 and hi >= st["sl"])
+                if hit_sl:
+                    pnl_sl = st["risk_rem"] * ((st["sl"] - entry) / sl_dist * r)
+                    if pnl_sl < 0:
+                        rem_lim = max(0.0, ftmo_dag_eur - dag[bar_date]["loss"])
+                        if abs(pnl_sl) > rem_lim:
+                            pnl_sl = -rem_lim
+                        dag[bar_date]["loss"] += abs(pnl_sl)
+                        dag[bar_date]["sl"] += 1
+                    kap += pnl_sl
+                    piek = max(piek, kap)
+                    _day_net_pnl[bar_date] = _day_net_pnl.get(bar_date, 0.0) + pnl_sl
+                    _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_sl
+                    trs.append(self._make_tr(st["ot"], ts, r, entry, st["sl"],
+                                             pnl_sl, "SL", st["sig_type"], st["sl"], st["tp1"], kap, st["lot_size"]))
+                    st["ip"] = False
+
+            if st["ip"]:
+                continue
+
+            # ── Maanddoel bereikt → stop ───────────────────────────
+            if monthly_profit_target > 0 and (kap - _month_start_equity) >= monthly_profit_target:
+                continue
+
+            # ── Entry condities (gedeelde limieten) ───────────────
+            if dag[bar_date]["loss"] >= ftmo_dag_eur * 0.65:
+                continue
+            if dag[bar_date]["n"] >= max_dag:
+                continue
+            if dag[bar_date]["sl"] >= sl_dag_max:
+                continue
+
+            # Cooldown per paar (uur-gebaseerd)
+            if st["last_ts"] is not None:
+                hours_since = (ts - st["last_ts"]).total_seconds() / 3600
+                if hours_since < cool_h:
+                    continue
+
+            # Max gelijktijdige posities
+            n_open = sum(1 for s in sym_state.values() if s["ip"])
+            if n_open >= max_concurrent:
+                continue
+
+            # Sessie filter
+            tier = self._engine.get_session(ts.to_pydatetime())
+            if tier == "blocked":
+                continue
+
+            # ── Signaal genereren ──────────────────────────────────
+            sym_cfg = self._get_symbol_cfg(cfg, sym)
+            signal = self._engine.generate_signal(df.iloc[max(0, i - 300): i + 1], cfg=sym_cfg)
+            if signal is None:
+                continue
+
+            sig_type = signal.signal_type
+            risk_pct = signal.risk_pct
+
+            # Standaard sessie: alleen A of B
+            if tier == "standard" and sig_type not in ("A_EMACROSS", "B_MACDCROSS"):
+                continue
+
+            # Verliesdag-filter
+            if loss_day_filter:
+                prev_days = sorted(d for d in _day_net_pnl if d < bar_date)[-2:]
+                if (len(prev_days) >= 2 and all(_day_net_pnl[d] < 0 for d in prev_days)
+                        and sig_type not in ("A_EMACROSS", "B_MACDCROSS", "F_MSS")):
+                    continue
+
+            # Drawdown scaling
+            dd_pct = (piek - kap) / max(piek, 1)
+            if dd_pct > 0.05:
+                risk_pct *= 0.25
+            elif dd_pct > 0.04:
+                risk_pct *= 0.40
+            elif dd_pct > 0.03:
+                risk_pct *= 0.60
+            elif dd_pct > 0.01:
+                risk_pct *= 0.80
+
+            # Loss streak
+            recent_sl = sum(1 for t in trs[-4:] if t["result"] == "SL" and t["pnl"] < 0)
+            if recent_sl >= 3:
+                risk_pct *= 0.50
+
+            # Weekly stop / scaling
+            if _current_week is not None:
+                _this_week_pnl = _week_pnl.get(_current_week, 0.0)
+                _week_loss_pct = _this_week_pnl / max(_week_start_eq, 1)
+                if weekly_stop_threshold > 0 and _week_loss_pct < -weekly_stop_threshold:
+                    continue
+                if soft_weekly_loss_threshold > 0 and _week_loss_pct < -soft_weekly_loss_threshold:
+                    risk_pct *= soft_weekly_loss_risk_scale
+                if weekly_loss_threshold > 0 and _week_loss_pct < -weekly_loss_threshold:
+                    if sig_type in weekly_loss_block_signals:
+                        continue
+                    risk_pct *= weekly_loss_risk_scale
+
+            # Dagwinst-lock
+            if daily_profit_lock_pct > 0:
+                _day_pnl = _day_net_pnl.get(bar_date, 0.0)
+                if _day_pnl / max(kap, 1) >= daily_profit_lock_pct:
+                    risk_pct *= daily_profit_lock_scale
+
+            # ── Positie openen ─────────────────────────────────────
+            cl_pr = float(b["close"])
+            sl_dist = abs(cl_pr - signal.stop_loss)
+            if sl_dist <= 0:
+                continue
+
+            risk_usd = kap * risk_pct * _compound_multiplier * _EUR_USD_RATE
+            risk_rem = kap * risk_pct * _compound_multiplier  # in EUR
+            lot_size = self._calc_lot(risk_usd, sl_dist, sym)
+
+            # Als lot cap aanslaat: risk_rem aanpassen
+            spec = SYMBOL_SPECS.get(sym, SYMBOL_SPECS["XAUUSD"])
+            actual_risk_usd = lot_size * sl_dist * spec["lot_factor"]
+            if actual_risk_usd < risk_usd * 0.99:
+                risk_rem = actual_risk_usd / _EUR_USD_RATE
+
+            richting = 1 if signal.direction == "long" else -1
+            st["ip"] = True
+            st["entry"] = cl_pr
+            st["sl"] = signal.stop_loss
+            st["tp1"] = signal.take_profit_1
+            st["tp2"] = signal.take_profit_2
+            st["tp3"] = signal.take_profit_3
+            st["richting"] = richting
+            st["sig_type"] = f"{sym}:{sig_type}"  # symbool-prefix voor rapportage
+            st["ot"] = ts
+            st["risk_rem"] = risk_rem
+            st["tp1_hit"] = False
+            st["tp2_hit"] = False
+            st["last_ts"] = ts
+            st["lot_size"] = lot_size
+            dag[bar_date]["n"] += 1
+
+            # Sla symbool op in trade record (via stype field)
+            trs_placeholder = self._make_tr(ts, ts, richting, cl_pr, cl_pr, 0.0,
+                                            "OPEN_PENDING", f"{sym}:{sig_type}", signal.stop_loss,
+                                            signal.take_profit_1, kap, lot_size)
+            # Gebruik geen placeholder — positie wordt geboekt bij sluiting
+
+        # ── Sluit alle nog open posities ──────────────────────────
+        for sym, st in sym_state.items():
+            if st["ip"]:
+                df = symbol_dfs[sym]
+                ep = float(df.iloc[-1]["close"])
+                sl_dist = abs(st["entry"] - st["sl"])
+                pnl = st["richting"] * (ep - st["entry"]) / max(sl_dist, 1e-10) * st["risk_rem"]
+                kap += pnl
+                trs.append(self._make_tr(st["ot"], df.index[-1], st["richting"], st["entry"], ep,
+                                         pnl, "OPEN", f"{sym}:{st['sig_type']}", st["sl"],
+                                         st["tp1"], kap, st["lot_size"]))
+
+        return trs, kap
+
     def _run_backtest_engine(
         self,
         df: pd.DataFrame,
@@ -444,8 +855,17 @@ class BacktestService:
         ftmo_tot_eur = starting_capital * ftmo_floor_pct
         ftmo_floor_eur = starting_capital * (1.0 - ftmo_floor_pct)  # voor balance_based
         # Verliesweek- en verliesdag-bescherming
+        soft_weekly_loss_threshold = float(cfg.get("soft_weekly_loss_threshold", 0.0))
+        soft_weekly_loss_risk_scale = float(cfg.get("soft_weekly_loss_risk_scale", 1.0))
         weekly_loss_threshold = float(cfg.get("weekly_loss_threshold", 0.0))
         weekly_loss_risk_scale = float(cfg.get("weekly_loss_risk_scale", 1.0))
+        weekly_loss_block_signals = {str(s) for s in cfg.get("weekly_loss_block_signals", ())}
+        weekly_stop_threshold = float(cfg.get("weekly_stop_threshold", 0.0))
+        daily_profit_lock_pct = float(cfg.get("daily_profit_lock_pct", 0.0))
+        daily_profit_lock_scale = float(cfg.get("daily_profit_lock_scale", 1.0))
+        recent_sl_block_threshold = int(cfg.get("recent_sl_block_threshold", 0))
+        recent_sl_lookback = int(cfg.get("recent_sl_lookback", 4))
+        recent_sl_block_signals = {str(s) for s in cfg.get("recent_sl_block_signals", ())}
         loss_day_filter = bool(cfg.get("loss_day_filter", False))
         # V20: maanddoel + 3-weken reset
         monthly_profit_target = float(cfg.get("monthly_profit_target", 0.0))  # 0 = uitgeschakeld
@@ -535,19 +955,18 @@ class BacktestService:
                 _next_reset_date = bar_date + timedelta(weeks=reset_weeks)
 
             # Weekly compound boost: na elke winstgevende week → multiplier omhoog
-            if weekly_compound:
-                bar_week = b.name.isocalendar()[1]
-                if _current_week is None:
-                    _current_week = bar_week
-                    _week_start_equity = kap
-                elif bar_week != _current_week:
-                    # Nieuwe week begint
+            bar_week = b.name.isocalendar()[1]
+            if _current_week is None:
+                _current_week = bar_week
+                _week_start_equity = kap
+            elif bar_week != _current_week:
+                if weekly_compound:
                     if kap > _week_start_equity:
                         _compound_multiplier = min(_compound_multiplier * compound_boost, 1.30)
                     else:
                         _compound_multiplier = max(_compound_multiplier * compound_decay, 1.0)
-                    _current_week = bar_week
-                    _week_start_equity = kap
+                _current_week = bar_week
+                _week_start_equity = kap
 
             # FTMO stop check
             if ftmo_balance_based:
@@ -772,16 +1191,31 @@ class BacktestService:
                 risk_pct *= 0.80
 
             # Loss streak scaling
-            recent_sl = sum(1 for t in trs[-4:] if t["result"] == "SL" and t["pnl"] < 0)
+            recent_sl = sum(1 for t in trs[-recent_sl_lookback:] if t["result"] == "SL" and t["pnl"] < 0)
+            if recent_sl_block_threshold > 0 and recent_sl >= recent_sl_block_threshold and sig_type in recent_sl_block_signals:
+                continue
             if recent_sl >= 3:
                 risk_pct *= 0.50
 
             # ── Verliesweek-bescherming: risico verlagen als week al in de min zit ──
-            if weekly_loss_threshold > 0 and _current_week is not None:
+            if _current_week is not None:
                 _this_week_pnl = _week_pnl.get(_current_week, 0.0)
                 _week_loss_pct = _this_week_pnl / max(_week_start_equity, 1)
-                if _week_loss_pct < -weekly_loss_threshold:
+                # Harde weekly stop: geen nieuwe entries als verlies > drempel
+                if weekly_stop_threshold > 0 and _week_loss_pct < -weekly_stop_threshold:
+                    continue
+                if soft_weekly_loss_threshold > 0 and _week_loss_pct < -soft_weekly_loss_threshold:
+                    risk_pct *= soft_weekly_loss_risk_scale
+                if weekly_loss_threshold > 0 and _week_loss_pct < -weekly_loss_threshold:
+                    if sig_type in weekly_loss_block_signals:
+                        continue
                     risk_pct *= weekly_loss_risk_scale
+
+            # ── Dagwinst-lock: risico halveren als dag al boven winstdrempel ──
+            if daily_profit_lock_pct > 0:
+                _day_pnl = _day_net_pnl.get(bar_date, 0.0)
+                if _day_pnl / max(kap, 1) >= daily_profit_lock_pct:
+                    risk_pct *= daily_profit_lock_scale
 
             richting = 1 if rich_str == "long" else -1
             cl_pr = float(b["close"])

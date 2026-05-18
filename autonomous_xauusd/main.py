@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from core.circuit_breaker_singleton import get_circuit_breaker
+from core.strategy_engine import get_symbol_cfg, SYMBOL_SPECS
 from core.config_watcher import StrategyConfigManager
 from core.ftmo_guard import FTMOConfig, FTMOGuard, get_ftmo_guard
 from core.sentiment_engine import SentimentEngine
@@ -76,7 +77,7 @@ class AutonomousTradingSystem:
 
         self.stop_requested = False
         self.consecutive_errors = 0
-        self.last_processed_bar: str | None = None
+        self.last_processed_bar: dict[str, str | None] = {}  # per symbool
 
         self.telegram = TelegramControlLayer(
             token=self.settings.telegram_bot_token,
@@ -173,213 +174,96 @@ class AutonomousTradingSystem:
             if not control.get("bot_active", True):
                 self._update_runtime_state(status="stopped")
                 return
-            # Hard guards before any market I/O — prevents unnecessary fetches and
-            # ensures paused/emergency state is respected even if bot_active was not
-            # cleared (e.g. manual DB edit or race condition).
             if control.get("emergency_stop", False):
                 self._update_runtime_state(
-                    status="emergency_stop",
-                    trading_paused=True,
-                    emergency_stop=True,
+                    status="emergency_stop", trading_paused=True, emergency_stop=True,
                     signals_enabled=control.get("signals_enabled", True),
                 )
                 return
             if control.get("trading_paused", False):
                 self._update_runtime_state(
-                    status="paused",
-                    pause_reason="trading_paused",
-                    trading_paused=True,
+                    status="paused", pause_reason="trading_paused", trading_paused=True,
                     signals_enabled=control.get("signals_enabled", True),
                 )
                 return
+
             session_info = self.session_engine.get_session_info()
             if not session_info.is_valid_for_trading:
                 self._update_runtime_state(
-                    status="waiting",
-                    session=session_info.session.value,
+                    status="waiting", session=session_info.session.value,
                     session_description=session_info.description,
                 )
                 return
 
-            market = self.engine.fetch_recent_candles()
-            enriched = self.brain.prepare_market_frame(market, self.parameters)
-            if len(enriched) < 4:
-                return
-
-            latest_closed_bar = enriched.index[-2].isoformat()
-            latest_bar = enriched.iloc[-2]
-            if latest_closed_bar == self.last_processed_bar:
-                self._update_runtime_state(last_bar=latest_closed_bar, status="waiting")
-                return
-
-            self.last_processed_bar = latest_closed_bar
-            open_trades = self.memory.list_open_trades(self.settings.symbol)
-            for closed_trade in self.engine.sync_trade_closures(open_trades, latest_bar=latest_bar):
-                self.memory.log_trade_close(closed_trade)
-                self.circuit_breaker.record_trade_result(closed_trade.pnl)
-                self._ftmo_guard.record_trade_closed(closed_trade.pnl)
-                self.telegram.notify(self._format_trade_close_message(closed_trade))
-
+            # ── Gedeelde checks (één keer per cycle) ──────────────
             account = self.engine.account_status()
             self.circuit_breaker.update_balance(
                 balance=account.get("balance", 0.0),
                 equity=account.get("equity", 0.0),
             )
-
-            sentiment_result = self.sentiment.get_sentiment()
-            self.memory.set_runtime_state("last_sentiment", sentiment_result.to_dict())
-
-            current_sentiment = SentimentScore(
-                score=sentiment_result.score,
-                label=sentiment_result.label,
-                headline_count=sentiment_result.headline_count,
-                sources=sentiment_result.sources,
-                fetched_at=sentiment_result.fetched_at,
-            )
-
-            # Update FTMO guard with current equity
             self._ftmo_guard.update_equity(account.get("equity", 0.0))
 
             cb_status = self.circuit_breaker.get_status_summary()
             self.memory.set_runtime_state("circuit_breaker", cb_status)
+            self.memory.set_runtime_state("ftmo_guard", self._ftmo_guard.get_status_dict())
 
-            # Persist FTMO status for dashboard
-            ftmo_status = self._ftmo_guard.get_status_dict()
-            self.memory.set_runtime_state("ftmo_guard", ftmo_status)
-
-            # Check circuit breaker
             if not self.circuit_breaker.can_trade():
                 reason = cb_status.get("circuit_description", "circuit breaker actief")
-                logger.warning("Trading geblokkeerd door circuit breaker: %s", reason)
-                self._update_runtime_state(
-                    status="circuit_breaker",
-                    circuit_breaker_reason=reason,
-                    equity=account.get("equity", 0.0),
-                )
+                self._update_runtime_state(status="circuit_breaker", circuit_breaker_reason=reason,
+                                           equity=account.get("equity", 0.0))
                 return
-
-            # Check FTMO guard
             if not self._ftmo_guard.can_trade():
                 locks = self._ftmo_guard.get_active_locks()
-                blocking = [lock for lock in locks if lock.locked and lock.severity in ("BLOCK", "CRITICAL")]
+                blocking = [l for l in locks if l.locked and l.severity in ("BLOCK", "CRITICAL")]
                 reason = blocking[0].reason if blocking else "FTMO protection active"
-                logger.warning("Trading geblokkeerd door FTMO guard: %s", reason)
-                self._update_runtime_state(status="ftmo_blocked", ftmo_reason=reason, equity=account.get("equity", 0.0))
+                self._update_runtime_state(status="ftmo_blocked", ftmo_reason=reason,
+                                           equity=account.get("equity", 0.0))
                 return
 
-            # Check news guard
             news_decision = self._news_guard.check()
             self.memory.set_runtime_state("news_guard", news_decision.to_dict())
             if not news_decision.allow_trading:
-                logger.warning("Trading geblokkeerd door news guard: %s", news_decision.reason)
                 if news_decision.lock_expires_at:
                     self._ftmo_guard.set_news_lock(news_decision.lock_expires_at)
-                self._update_runtime_state(
-                    status="news_lock", news_reason=news_decision.reason, equity=account.get("equity", 0.0)
-                )
+                self._update_runtime_state(status="news_lock", news_reason=news_decision.reason,
+                                           equity=account.get("equity", 0.0))
                 return
 
-            # Haal V20 live config op (hot-reload vanuit live_strategy.json)
+            sentiment_result = self.sentiment.get_sentiment()
+            self.memory.set_runtime_state("last_sentiment", sentiment_result.to_dict())
+            current_sentiment = SentimentScore(
+                score=sentiment_result.score, label=sentiment_result.label,
+                headline_count=sentiment_result.headline_count,
+                sources=sentiment_result.sources, fetched_at=sentiment_result.fetched_at,
+            )
+
             _live_cfg = self.config_manager.get_strategy_cfg()
+            max_concurrent = int(_live_cfg.get("max_concurrent_positions", 2)) if _live_cfg else 2
 
-            signal = None
-            if control.get("signals_enabled", True):
-                signal = self.brain.generate_signal(
-                    enriched,
-                    self.parameters,
-                    self.settings.symbol,
-                    self.settings.timeframe,
-                    sentiment=current_sentiment,
-                    sentiment_threshold=self.settings.sentiment_filter_threshold,
-                    is_killzone=session_info.is_killzone,
-                    strategy_cfg=_live_cfg,
-                )
-                if signal:
-                    self._record_signal(signal)
+            # ── Per-paar loop ─────────────────────────────────────
+            last_signal = None
+            last_bar_any = None
 
-            if signal and not self.engine.has_open_position(self.settings.symbol):
-                risk_mult = self.circuit_breaker.get_risk_multiplier()
-                # Pattern memory: check if setup is blocked
-                sig_type = (
-                    signal.features.get("signal_type", signal.reason)
-                    if isinstance(signal.features, dict)
-                    else signal.reason
-                )
-                h4_regime = signal.market_regime or ""
-                # Circuit breaker graduated protection: block disallowed signal types
-                if not self.circuit_breaker.is_signal_allowed(sig_type):
-                    logger.info(
-                        "Trade geblokkeerd door circuit_breaker (stage %d): %s",
-                        self.circuit_breaker.get_graduated_stage(),
-                        sig_type,
+            for sym in self.settings.symbols:
+                try:
+                    self._run_symbol_cycle(
+                        sym, control, session_info, account, current_sentiment,
+                        sentiment_result, cb_status, _live_cfg, max_concurrent,
                     )
-                    self._update_runtime_state(status="running", last_signal="blocked: circuit_breaker")
-                    return
-                if self._pattern_memory.is_blocked(sig_type, signal.side, h4_regime=h4_regime):
-                    logger.info("Trade geblokkeerd door pattern_memory: %s %s", sig_type, signal.side)
-                    self._update_runtime_state(status="running", last_signal="blocked: pattern_memory")
-                    return
-                # Hard pre-trade risk gates
-                allowed, gate_reason = self._can_open_trade(account)
-                if not allowed:
-                    logger.info(
-                        "Trade geblokkeerd door risk_gate: %s | signaal=%s %s %s",
-                        gate_reason,
-                        signal.side,
-                        sig_type,
-                        self.settings.symbol,
-                    )
-                    self._update_runtime_state(
-                        status="running",
-                        last_signal=f"blocked: {gate_reason}",
-                        balance=account.get("balance", 0.0),
-                        equity=account.get("equity", 0.0),
-                    )
-                    return
-                logger.info(
-                    "Trade openen: %s %s %s | gates=%s | risk_mult=%.0f%%",
-                    signal.side,
-                    sig_type,
-                    self.settings.symbol,
-                    gate_reason,
-                    risk_mult * 100,
-                )
-                execution = self.engine.execute_trade(
-                    signal,
-                    self.parameters,
-                    account_equity=account.get("equity", 0.0),
-                    risk_multiplier=risk_mult,
-                )
-                self.memory.set_runtime_state("last_trade_opened_at", datetime.now(timezone.utc).isoformat())
-                self._ftmo_guard.record_trade_opened()
-                self._pattern_memory.record_trade_opened(
-                    sig_type,
-                    signal.side,
-                    h4_regime=h4_regime,
-                    session=session_info.session.value,
-                )
-                self.memory.log_trade_open(execution, sentiment_score=current_sentiment.score)
-                self.telegram.notify(
-                    self._format_trade_open_message(
-                        execution,
-                        signal,
-                        session_info,
-                        sentiment_result,
-                        risk_mult,
-                        sig_type,
-                    )
-                )
+                    last_signal = self.memory.get_runtime_state(f"last_signal_{sym}") or last_signal
+                    last_bar_any = self.last_processed_bar.get(sym) or last_bar_any
+                except Exception as sym_exc:
+                    logger.warning("Fout bij cycle voor %s: %s", sym, sym_exc)
 
-            self._write_bot_state(account, session_info, sentiment_result, signal)
             training = self._maybe_train()
             self._maybe_send_daily_report()
             self._update_runtime_state(
-                last_bar=latest_closed_bar,
+                last_bar=last_bar_any or "",
                 status="running",
                 balance=account.get("balance", 0.0),
                 equity=account.get("equity", 0.0),
                 open_positions=account.get("open_positions", 0),
-                last_signal=signal.reason if signal else "geen signaal",
+                last_signal=str(last_signal) if last_signal else "geen signaal",
                 sentiment_label=current_sentiment.label,
                 sentiment_score=current_sentiment.score,
                 last_training_at=training.trained_at.isoformat() if training else None,
@@ -389,6 +273,7 @@ class AutonomousTradingSystem:
                 trading_paused=control.get("trading_paused", False),
                 emergency_stop=control.get("emergency_stop", False),
                 signals_enabled=control.get("signals_enabled", True),
+                symbols=list(self.settings.symbols),
             )
             self.consecutive_errors = 0
 
@@ -399,6 +284,104 @@ class AutonomousTradingSystem:
             if self.consecutive_errors >= self.settings.max_consecutive_errors:
                 self.stop_requested = True
                 self.telegram.notify(f"Engine gestopt na {self.consecutive_errors} opeenvolgende fouten: {exc}")
+
+    def _run_symbol_cycle(
+        self,
+        sym: str,
+        control: dict,
+        session_info,
+        account: dict,
+        current_sentiment,
+        sentiment_result,
+        cb_status: dict,
+        live_cfg: dict | None,
+        max_concurrent: int,
+    ) -> None:
+        """Voert één trading cycle uit voor een enkel symbool."""
+        market = self.engine.fetch_recent_candles(symbol=sym)
+        enriched = self.brain.prepare_market_frame(market, self.parameters)
+        if len(enriched) < 4:
+            return
+
+        latest_closed_bar = enriched.index[-2].isoformat()
+        latest_bar = enriched.iloc[-2]
+        if latest_closed_bar == self.last_processed_bar.get(sym):
+            return
+        self.last_processed_bar[sym] = latest_closed_bar
+
+        # Sluit afgeronde trades
+        open_trades = self.memory.list_open_trades(sym)
+        for closed_trade in self.engine.sync_trade_closures(open_trades, latest_bar=latest_bar):
+            self.memory.log_trade_close(closed_trade)
+            self.circuit_breaker.record_trade_result(closed_trade.pnl)
+            self._ftmo_guard.record_trade_closed(closed_trade.pnl)
+            self.telegram.notify(self._format_trade_close_message(closed_trade))
+
+        # Max gelijktijdige posities over alle paren
+        total_open = sum(
+            len(self.memory.list_open_trades(s)) for s in self.settings.symbols
+        )
+        if total_open >= max_concurrent:
+            return
+
+        if self.engine.has_open_position(sym):
+            return
+
+        # Signaal genereren met symbool-specifieke config (slope normalisatie)
+        sym_cfg = get_symbol_cfg(live_cfg, sym) if live_cfg else None
+
+        signal = None
+        if control.get("signals_enabled", True):
+            signal = self.brain.generate_signal(
+                enriched,
+                self.parameters,
+                sym,
+                self.settings.timeframe,
+                sentiment=current_sentiment,
+                sentiment_threshold=self.settings.sentiment_filter_threshold,
+                is_killzone=session_info.is_killzone,
+                strategy_cfg=sym_cfg,
+            )
+            if signal:
+                self._record_signal(signal)
+                self.memory.set_runtime_state(f"last_signal_{sym}", signal.reason)
+
+        if not signal:
+            return
+
+        risk_mult = self.circuit_breaker.get_risk_multiplier()
+        sig_type = (
+            signal.features.get("signal_type", signal.reason)
+            if isinstance(signal.features, dict) else signal.reason
+        )
+        h4_regime = signal.market_regime or ""
+
+        if not self.circuit_breaker.is_signal_allowed(sig_type):
+            logger.info("Trade geblokkeerd door circuit_breaker: %s %s", sym, sig_type)
+            return
+        if self._pattern_memory.is_blocked(sig_type, signal.side, h4_regime=h4_regime):
+            logger.info("Trade geblokkeerd door pattern_memory: %s %s %s", sym, sig_type, signal.side)
+            return
+        allowed, gate_reason = self._can_open_trade(account)
+        if not allowed:
+            logger.info("Trade geblokkeerd door risk_gate: %s | %s %s %s", gate_reason, signal.side, sig_type, sym)
+            return
+
+        logger.info("Trade openen: %s %s %s | risk_mult=%.0f%%", signal.side, sig_type, sym, risk_mult * 100)
+        execution = self.engine.execute_trade(
+            signal, self.parameters,
+            account_equity=account.get("equity", 0.0),
+            risk_multiplier=risk_mult,
+        )
+        self.memory.set_runtime_state("last_trade_opened_at", datetime.now(timezone.utc).isoformat())
+        self._ftmo_guard.record_trade_opened()
+        self._pattern_memory.record_trade_opened(
+            sig_type, signal.side, h4_regime=h4_regime, session=session_info.session.value,
+        )
+        self.memory.log_trade_open(execution, sentiment_score=current_sentiment.score)
+        self.telegram.notify(
+            self._format_trade_open_message(execution, signal, session_info, sentiment_result, risk_mult, sig_type)
+        )
 
     def _write_bot_state(self, account: dict, session_info, sentiment_result, signal) -> None:
         try:

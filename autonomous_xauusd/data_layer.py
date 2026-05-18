@@ -50,10 +50,9 @@ class DataExecutionLayer:
             logger.error("MT5 login failed: %s", mt5.last_error())
             mt5.shutdown()
             return False
-        if not mt5.symbol_select(self.settings.symbol, True):
-            logger.error("Could not select symbol %s", self.settings.symbol)
-            mt5.shutdown()
-            return False
+        for sym in self.settings.symbols:
+            if not mt5.symbol_select(sym, True):
+                logger.warning("Could not select symbol %s — skipping", sym)
         self.connected = True
         return True
 
@@ -62,12 +61,17 @@ class DataExecutionLayer:
             mt5.shutdown()
             self.connected = False
 
-    def fetch_recent_candles(self) -> pd.DataFrame:
+    def fetch_recent_candles(self, symbol: str | None = None) -> pd.DataFrame:
+        """Haalt recente candles op voor het opgegeven symbool (of het primaire symbool)."""
+        sym = (symbol or self.settings.symbol).upper()
+
         if mt5 is not None and self.connected:
             timeframe = self._resolve_mt5_timeframe(self.settings.timeframe)
-            rates = mt5.copy_rates_from_pos(self.settings.symbol, timeframe, 0, self.settings.history_bars)
+            if not mt5.symbol_select(sym, True):
+                logger.warning("MT5: symbol_select(%s) mislukt", sym)
+            rates = mt5.copy_rates_from_pos(sym, timeframe, 0, self.settings.history_bars)
             if rates is None:
-                raise RuntimeError(f"MT5 returned no rates: {mt5.last_error()}")
+                raise RuntimeError(f"MT5 returned no rates for {sym}: {mt5.last_error()}")
             frame = pd.DataFrame(rates)
             if frame.empty:
                 return frame
@@ -81,7 +85,7 @@ class DataExecutionLayer:
             )
 
         interval = self._resolve_yfinance_interval(self.settings.timeframe)
-        ticker = self._resolve_yfinance_symbol(self.settings.symbol)
+        ticker = self._resolve_yfinance_symbol(sym)
         period = self._resolve_yfinance_period(self.settings.timeframe)
         frame = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False)
         if frame.empty:

@@ -42,7 +42,8 @@ class XAUUSDSettings:
     base_dir: Path
     mode: str
     allow_live_account: bool
-    symbol: str
+    symbol: str          # primair symbool (backwards compat)
+    symbols: tuple[str, ...]  # alle paren die live gehandeld worden
     timeframe: str
     poll_interval_seconds: int
     history_bars: int
@@ -143,6 +144,14 @@ def load_settings(base_dir: Path | None = None) -> XAUUSDSettings:
     symbol = _read("AUTONOMOUS_SYMBOL", _read("TRADING_SYMBOL", "XAUUSD")).strip().upper() or "XAUUSD"
     timeframe = _read("AUTONOMOUS_TIMEFRAME", _read("TRADING_TIMEFRAME", "H1")).strip().upper() or "H1"
 
+    # Multi-paar: AUTONOMOUS_SYMBOLS=XAUUSD,EURUSD,GBPUSD (optioneel)
+    _symbols_raw = _read("AUTONOMOUS_SYMBOLS", "").strip()
+    symbols: tuple[str, ...] = (
+        tuple(s.strip().upper() for s in _symbols_raw.split(",") if s.strip())
+        if _symbols_raw
+        else (symbol,)
+    )
+
     default_parameters = StrategyParameters(
         ema_fast=_read_int("AUTO_EMA_FAST", 8),
         ema_slow=_read_int("AUTO_EMA_SLOW", 21),
@@ -176,6 +185,7 @@ def load_settings(base_dir: Path | None = None) -> XAUUSDSettings:
         mode=mode,
         allow_live_account=allow_live_account,
         symbol=symbol,
+        symbols=symbols,
         timeframe=timeframe,
         poll_interval_seconds=_read_int("AUTO_POLL_INTERVAL_SECONDS", 15),
         history_bars=_read_int("AUTO_HISTORY_BARS", 500),

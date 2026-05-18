@@ -73,6 +73,101 @@ class TestPrepareFeatures:
 
 
 class TestGenerateSignal:
+    def test_macd_cross_is_preferred_over_ema_cross_when_both_fire(self):
+        engine = get_engine()
+        idx = pd.date_range("2026-01-01", periods=4, freq="1h", tz="UTC")
+        rows = []
+        for i in range(4):
+            rows.append(
+                {
+                    "close": 101.0,
+                    "high": 102.0,
+                    "low": 100.0,
+                    "open": 100.5,
+                    "volume": 1500.0,
+                    "ema9": 101.8,
+                    "ema21": 100.8,
+                    "ema50": 100.1,
+                    "ema200": 99.5,
+                    "rsi14": 56.0,
+                    "atr14": 1.2,
+                    "adx14": 24.0,
+                    "macd_hist": 0.4,
+                    "macd_xup": i == 2,
+                    "macd_xdn": False,
+                    "ema_xup": i == 2,
+                    "ema_xdn": False,
+                    "vol_ma": 1200.0,
+                    "hh5": 102.0,
+                    "ll5": 99.0,
+                    "dist21": 0.10,
+                    "rsi_recov": True,
+                    "bos_bull": False,
+                    "bos_bear": False,
+                    "mss_bull": False,
+                    "mss_bear": False,
+                    "h4_reg": "STERK_BULL",
+                    "h4_atr": 4.0,
+                    "h4_adx": 25.0,
+                    "h4_sl": 0.60,
+                    "h4_rsi": 56.0,
+                    "d1_trend": "bull",
+                }
+            )
+        features = pd.DataFrame(rows, index=idx)
+
+        signal = engine.generate_signal(features)
+
+        assert signal is not None
+        assert signal.signal_type == "B_MACDCROSS"
+
+    def test_pullback_requires_stronger_h4_slope_and_trend_quality(self):
+        engine = get_engine()
+        idx = pd.date_range("2026-01-01", periods=4, freq="1h", tz="UTC")
+        rows = []
+        for _ in range(4):
+            rows.append(
+                {
+                    "close": 101.0,
+                    "high": 102.0,
+                    "low": 100.0,
+                    "open": 100.5,
+                    "volume": 1500.0,
+                    "ema9": 101.5,
+                    "ema21": 100.8,
+                    "ema50": 100.1,
+                    "ema200": 99.5,
+                    "rsi14": 55.0,
+                    "atr14": 1.2,
+                    "adx14": 23.0,
+                    "macd_hist": 0.1,
+                    "macd_xup": False,
+                    "macd_xdn": False,
+                    "ema_xup": False,
+                    "ema_xdn": False,
+                    "vol_ma": 1200.0,
+                    "hh5": 102.0,
+                    "ll5": 99.0,
+                    "dist21": 0.12,
+                    "rsi_recov": False,
+                    "bos_bull": False,
+                    "bos_bear": False,
+                    "mss_bull": False,
+                    "mss_bear": False,
+                    "h4_reg": "STERK_BULL",
+                    "h4_atr": 4.0,
+                    "h4_adx": 25.0,
+                    "h4_sl": 0.30,
+                    "h4_rsi": 56.0,
+                    "d1_trend": "bull",
+                }
+            )
+        features = pd.DataFrame(rows, index=idx)
+
+        signal = engine.generate_signal(features)
+
+        assert signal is None
+
     def test_returns_none_or_signal_result(self):
         engine = get_engine()
         df = _make_ohlcv(200)

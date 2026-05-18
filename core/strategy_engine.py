@@ -50,6 +50,29 @@ DEFAULT_CFG: dict = {
     "trailing": True,  # Trailing stop na TP1
     "breakeven_r": 0.8,  # Breakeven stop na 0.8R winst
     "kz_mult": 1.25,  # Risico multiplier tijdens kill zones
+    "pullback_dist_long_min": -0.15,
+    "pullback_dist_long_max": 0.35,
+    "pullback_dist_short_min": -0.35,
+    "pullback_dist_short_max": 0.15,
+    "pullback_rsi_long_min": 52,
+    "pullback_rsi_long_max": 60,
+    "pullback_rsi_short_min": 40,
+    "pullback_rsi_short_max": 50,
+    "pullback_min_adx": 18,
+    "pullback_min_h4_slope": 0.45,
+    "pullback_vol_ratio_min": 0.85,
+    "pullback_risk_scale": 1.0,
+    "ema_cross_risk_scale": 1.0,
+    "ema_cross_min_adx": 16,
+    "ema_cross_min_h4_slope": 0.25,
+    "ema_cross_vol_ratio_min": 0.85,
+    "ema_cross_rsi_long_min": 49,
+    "ema_cross_rsi_long_max": 68,
+    "ema_cross_rsi_short_min": 32,
+    "ema_cross_rsi_short_max": 51,
+    "ema_cross_require_strong_regime": False,
+    "bos_min_adx": 24,
+    "bos_min_h4_slope": 0.45,
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -100,6 +123,7 @@ V18_CFG: dict = {
 
 V19_CFG: dict = {
     **V18_CFG,
+    "risk_a": 0.0110,
     # ── Betere risk/reward (grotere winnaars, sneller breakeven) ──
     "tp3_r": 7.0,  # grotere runners lopen langer
     "tp1_pct": 0.20,  # minder sluiten bij TP1, meer laten lopen
@@ -109,6 +133,35 @@ V19_CFG: dict = {
     "weekly_loss_threshold": 0.015,  # -1.5% deze week → risico verlagen
     "weekly_loss_risk_scale": 0.55,  # risico → 55% bij verliesweek
     "loss_day_filter": True,  # na 2 verlies-dagen: alleen A/B/F signalen
+    "soft_weekly_loss_threshold": 0.0075,
+    "soft_weekly_loss_risk_scale": 0.75,
+    "weekly_loss_block_signals": ("D_PULLBACK", "E_BOS"),
+    "recent_sl_block_threshold": 2,
+    "recent_sl_lookback": 4,
+    "recent_sl_block_signals": ("D_PULLBACK", "E_BOS"),
+    "pullback_dist_long_min": -0.12,
+    "pullback_dist_long_max": 0.32,
+    "pullback_dist_short_min": -0.32,
+    "pullback_dist_short_max": 0.12,
+    "pullback_rsi_long_min": 52,
+    "pullback_rsi_long_max": 60,
+    "pullback_rsi_short_min": 40,
+    "pullback_rsi_short_max": 50,
+    "pullback_min_adx": 19,
+    "pullback_min_h4_slope": 0.45,
+    "pullback_vol_ratio_min": 0.90,
+    "pullback_risk_scale": 0.75,
+    "ema_cross_risk_scale": 0.75,
+    "ema_cross_min_adx": 19,
+    "ema_cross_min_h4_slope": 0.45,
+    "ema_cross_vol_ratio_min": 0.95,
+    "ema_cross_rsi_long_min": 51,
+    "ema_cross_rsi_long_max": 63,
+    "ema_cross_rsi_short_min": 37,
+    "ema_cross_rsi_short_max": 49,
+    "ema_cross_require_strong_regime": True,
+    "bos_min_adx": 26,
+    "bos_min_h4_slope": 0.55,
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -117,18 +170,119 @@ V19_CFG: dict = {
 
 V20_CFG: dict = {
     **V19_CFG,
+    "risk_a": 0.0100,
     # ── Maandelijks winstdoel ──────────────────────────────────────
     "monthly_profit_target": 40_000.0,
     "monthly_min_target": 20_000.0,
     # ── 3-weken reset systeem ─────────────────────────────────────
     "reset_weeks": 3,
     "reset_capital": 160_000.0,
+    "soft_weekly_loss_threshold": 0.0065,
+    "soft_weekly_loss_risk_scale": 0.65,
+    "weekly_loss_threshold": 0.012,
+    "weekly_loss_risk_scale": 0.40,
 }
+
+# ─────────────────────────────────────────────────────────────────
+# V21 PARAMETERS — Doel: €20-40k/maand | Geen verlies weken
+# Hogere risk voor rendement + harde weekly stop + dagwinst-lock
+# ─────────────────────────────────────────────────────────────────
+
+V21_CFG: dict = {
+    **V20_CFG,
+    # ── Risico omhoog voor 20-40k/maand doel ──────────────────────
+    "risk_a": 0.0140,  # EMA cross — 1.4% (was 1.0% in V20)
+    "risk_b": 0.0110,  # MACD/BOS/Momentum — 1.1%
+    "risk_c": 0.0085,  # Pullback/MSS — 0.85%
+    # ── Harde weekly stop: geen nieuwe entries als week > -2% ──────
+    "weekly_stop_threshold": 0.020,
+    # ── Soft drempel eerder: -0.5% → 70% risk ─────────────────────
+    "soft_weekly_loss_threshold": 0.005,
+    "soft_weekly_loss_risk_scale": 0.70,
+    # ── Hard drempel scherper: -1.0% → 35% risk + block C/D/E/F ──
+    "weekly_loss_threshold": 0.010,
+    "weekly_loss_risk_scale": 0.35,
+    "weekly_loss_block_signals": ("C_MOMENTUM", "D_PULLBACK", "E_BOS", "F_MSS"),
+    # ── Dagelijkse winst-lock: na +2.5% dag → 50% risk rest dag ──
+    "daily_profit_lock_pct": 0.025,
+    "daily_profit_lock_scale": 0.50,
+    # ── Tighter dagverlies ─────────────────────────────────────────
+    "max_daily_loss_eur": 5_000.0,
+    # ── Snellere breakeven om dag-winst te beschermen ──────────────
+    "breakeven_r": 0.55,
+    # ── Maanddoel behouden ────────────────────────────────────────
+    "monthly_profit_target": 40_000.0,
+    "monthly_min_target": 20_000.0,
+}
+
+# ─────────────────────────────────────────────────────────────────
+# V22 PARAMETERS — Multi-paar | Min 2 trades/dag | €16k+/maand
+# XAUUSD + EURUSD + GBPUSD, gedeeld kapitaal, iets lagere ADX drempels
+# ─────────────────────────────────────────────────────────────────
+
+V22_CFG: dict = {
+    **V21_CFG,
+    # ── Risico per signaaltype (3 paren = meer kansen, iets lager per trade) ──
+    "risk_a": 0.0120,
+    "risk_b": 0.0095,
+    "risk_c": 0.0075,
+    # ── Lagere ADX drempels → meer signalen op matige trends ──────
+    "adx_min": 7,
+    "h4adx_min": 10,
+    # ── EMA cross minder streng → meer A-signalen ─────────────────
+    "ema_cross_min_adx": 14,
+    "ema_cross_min_h4_slope": 0.20,
+    "ema_cross_vol_ratio_min": 0.80,
+    "ema_cross_require_strong_regime": False,  # BULL volstaat (niet alleen STERK_BULL)
+    # ── Pullback minder streng ────────────────────────────────────
+    "pullback_min_adx": 15,
+    "pullback_min_h4_slope": 0.20,
+    "pullback_vol_ratio_min": 0.80,
+    # ── BOS iets lagere drempel ───────────────────────────────────
+    "bos_min_adx": 20,
+    "bos_min_h4_slope": 0.25,
+    # ── Max gelijktijdige posities (gedeeld over alle paren) ───────
+    "max_concurrent_positions": 2,
+    # ── Per-paar daglimieten ──────────────────────────────────────
+    "max_dag": 4,
+    "sl_dag_max": 2,
+    # ── Compound (iets agressiever bij winstgevende week) ─────────
+    "compound_boost": 1.10,
+}
+
+# ─────────────────────────────────────────────────────────────────
+# MULTI-PAAR CONTRACT SPECS (gedeeld door backtest + live bot)
+# lot_factor: P&L per lot per 1 prijseenheid (USD)
+# price_ref: referentieprijs voor H4-slope normalisatie t.o.v. XAUUSD
+# ─────────────────────────────────────────────────────────────────
+
+SYMBOL_SPECS: dict[str, dict] = {
+    "XAUUSD": {"yf_ticker": "GC=F",      "lot_factor": 100,     "max_lot": 4.0,  "price_ref": 2800.0},
+    "EURUSD": {"yf_ticker": "EURUSD=X",  "lot_factor": 100_000, "max_lot": 20.0, "price_ref": 1.10},
+    "GBPUSD": {"yf_ticker": "GBPUSD=X",  "lot_factor": 100_000, "max_lot": 20.0, "price_ref": 1.30},
+}
+
+
+def get_symbol_cfg(base_cfg: dict, symbol: str) -> dict:
+    """
+    Schaalt H4-slope drempels naar de prijsschaal van het symbool.
+    XAUUSD: ongewijzigd. Forex-paren: slope × (prijs / 2800).
+    """
+    spec = SYMBOL_SPECS.get(symbol)
+    if spec is None or symbol == "XAUUSD":
+        return base_cfg
+    scale = spec["price_ref"] / SYMBOL_SPECS["XAUUSD"]["price_ref"]
+    cfg = dict(base_cfg)
+    for key in ("ema_cross_min_h4_slope", "pullback_min_h4_slope", "bos_min_h4_slope"):
+        if key in cfg:
+            cfg[key] = cfg[key] * scale
+    return cfg
+
 
 # Signal prioriteit
 SIGNAL_PRIORITY: dict[str, int] = {
-    "A_EMACROSS": 6,
-    "B_MACDCROSS": 5,
+    "B_MACDCROSS": 6,
+    "A_EMACROSS": 5,
     "E_BOS": 4,
     "C_MOMENTUM": 3,
     "F_MSS": 2,
@@ -495,6 +649,29 @@ class StrategyEngine:
         tp1r = params["tp1_r"]
         tp2r = params["tp2_r"]
         tp3r = params["tp3_r"]
+        pullback_dist_long_min = _safe(params.get("pullback_dist_long_min", -0.15), -0.15)
+        pullback_dist_long_max = _safe(params.get("pullback_dist_long_max", 0.35), 0.35)
+        pullback_dist_short_min = _safe(params.get("pullback_dist_short_min", -0.35), -0.35)
+        pullback_dist_short_max = _safe(params.get("pullback_dist_short_max", 0.15), 0.15)
+        pullback_rsi_long_min = _safe(params.get("pullback_rsi_long_min", 52), 52)
+        pullback_rsi_long_max = _safe(params.get("pullback_rsi_long_max", 60), 60)
+        pullback_rsi_short_min = _safe(params.get("pullback_rsi_short_min", 40), 40)
+        pullback_rsi_short_max = _safe(params.get("pullback_rsi_short_max", 50), 50)
+        pullback_min_adx = _safe(params.get("pullback_min_adx", max(adx_min + 4, 18)), max(adx_min + 4, 18))
+        pullback_min_h4_slope = _safe(params.get("pullback_min_h4_slope", 0.45), 0.45)
+        pullback_vol_ratio_min = _safe(params.get("pullback_vol_ratio_min", 0.85), 0.85)
+        pullback_risk_scale = _safe(params.get("pullback_risk_scale", 1.0), 1.0)
+        ema_cross_risk_scale = _safe(params.get("ema_cross_risk_scale", 1.0), 1.0)
+        ema_cross_min_adx = _safe(params.get("ema_cross_min_adx", max(adx_min + 2, 16)), max(adx_min + 2, 16))
+        ema_cross_min_h4_slope = _safe(params.get("ema_cross_min_h4_slope", 0.25), 0.25)
+        ema_cross_vol_ratio_min = _safe(params.get("ema_cross_vol_ratio_min", 0.85), 0.85)
+        ema_cross_rsi_long_min = _safe(params.get("ema_cross_rsi_long_min", 49), 49)
+        ema_cross_rsi_long_max = _safe(params.get("ema_cross_rsi_long_max", 68), 68)
+        ema_cross_rsi_short_min = _safe(params.get("ema_cross_rsi_short_min", 32), 32)
+        ema_cross_rsi_short_max = _safe(params.get("ema_cross_rsi_short_max", 51), 51)
+        ema_cross_require_strong_regime = bool(params.get("ema_cross_require_strong_regime", False))
+        bos_min_adx = _safe(params.get("bos_min_adx", 24), 24)
+        bos_min_h4_slope = _safe(params.get("bos_min_h4_slope", 0.45), 0.45)
 
         # ── Globale filters ──────────────────────────────────────
         if h4adx < h4a_min:
@@ -527,8 +704,17 @@ class StrategyEngine:
         if bull_ok:
             rsi_lo, rsi_hi = 47, 72
 
-            if ema_xup and macdh > -1.0 and rsi_lo <= rsi14 <= rsi_hi and h4reg in ("STERK_BULL", "BULL"):
-                sigs.append(("long", "A_EMACROSS", risk_a * sent_mult_long, tp1r, tp2r, tp3r))
+            if (
+                ema_xup
+                and macdh > -0.5
+                and ema_cross_rsi_long_min <= rsi14 <= ema_cross_rsi_long_max
+                and adx >= ema_cross_min_adx
+                and h4sl >= ema_cross_min_h4_slope
+                and (not ema_cross_require_strong_regime or h4reg == "STERK_BULL")
+                and (vol_ma <= 100 or vol >= vol_ma * ema_cross_vol_ratio_min)
+                and e9 > e50
+            ):
+                sigs.append(("long", "A_EMACROSS", risk_a * ema_cross_risk_scale * sent_mult_long, tp1r, tp2r, tp3r))
 
             if macd_xu and e9 > e21 and rsi_lo <= rsi14 <= rsi_hi - 3 and h4sl > 0:
                 sigs.append(("long", "B_MACDCROSS", risk_b * sent_mult_long, tp1r, tp2r, tp3r))
@@ -548,16 +734,27 @@ class StrategyEngine:
             # D_PULLBACK: schonere pullback range (dichter bij EMA21)
             if (
                 h4reg == "STERK_BULL"
-                and -0.2 <= dist21 <= 0.6
+                and pullback_dist_long_min <= dist21 <= pullback_dist_long_max
                 and cl > e21
-                and 50 <= rsi14 <= 61
+                and e21 > e50
+                and pullback_rsi_long_min <= rsi14 <= pullback_rsi_long_max
                 and e9 > e21
                 and macdh > -0.5
+                and adx >= pullback_min_adx
+                and h4sl >= pullback_min_h4_slope
+                and (vol_ma <= 100 or vol >= vol_ma * pullback_vol_ratio_min)
             ):
-                sigs.append(("long", "D_PULLBACK", risk_c * sent_mult_long, tp1r, tp2r, tp3r))
+                sigs.append(("long", "D_PULLBACK", risk_c * pullback_risk_scale * sent_mult_long, tp1r, tp2r, tp3r))
 
             # E_BOS: risk_c (was risk_b) + strengere ADX-filter
-            if bos_b and cl > e21 and 53 <= rsi14 <= 68 and adx > 22 and h4reg in ("STERK_BULL", "BULL"):
+            if (
+                bos_b
+                and cl > e21
+                and 53 <= rsi14 <= 68
+                and adx >= bos_min_adx
+                and h4sl >= bos_min_h4_slope
+                and h4reg in ("STERK_BULL", "BULL")
+            ):
                 sigs.append(("long", "E_BOS", risk_c * sent_mult_long, tp1r * 0.9, tp2r, tp3r * 0.9))
 
             if mss_b and 50 <= rsi14 <= 65 and cl > e21 and h4reg in ("STERK_BULL", "BULL") and h4sl > 0:
@@ -575,8 +772,17 @@ class StrategyEngine:
         if bear_ok:
             rsi_lo, rsi_hi = 28, 53
 
-            if ema_xdn and macdh < 1.0 and rsi_lo <= rsi14 <= rsi_hi and h4reg in ("STERK_BEAR", "BEAR"):
-                sigs.append(("short", "A_EMACROSS", risk_a * sent_mult_short, tp1r, tp2r, tp3r))
+            if (
+                ema_xdn
+                and macdh < 0.5
+                and ema_cross_rsi_short_min <= rsi14 <= ema_cross_rsi_short_max
+                and adx >= ema_cross_min_adx
+                and h4sl <= -ema_cross_min_h4_slope
+                and (not ema_cross_require_strong_regime or h4reg == "STERK_BEAR")
+                and (vol_ma <= 100 or vol >= vol_ma * ema_cross_vol_ratio_min)
+                and e9 < e50
+            ):
+                sigs.append(("short", "A_EMACROSS", risk_a * ema_cross_risk_scale * sent_mult_short, tp1r, tp2r, tp3r))
 
             if macd_xd and e9 < e21 and rsi_lo + 3 <= rsi14 <= rsi_hi and h4sl < 0:
                 sigs.append(("short", "B_MACDCROSS", risk_b * sent_mult_short, tp1r, tp2r, tp3r))
@@ -595,16 +801,27 @@ class StrategyEngine:
             # D_PULLBACK: schonere pullback range (dichter bij EMA21)
             if (
                 h4reg == "STERK_BEAR"
-                and -0.6 <= dist21 <= 0.2
+                and pullback_dist_short_min <= dist21 <= pullback_dist_short_max
                 and cl < e21
-                and 39 <= rsi14 <= rsi_hi
+                and e21 < e50
+                and pullback_rsi_short_min <= rsi14 <= pullback_rsi_short_max
                 and e9 < e21
                 and macdh < 0.5
+                and adx >= pullback_min_adx
+                and h4sl <= -pullback_min_h4_slope
+                and (vol_ma <= 100 or vol >= vol_ma * pullback_vol_ratio_min)
             ):
-                sigs.append(("short", "D_PULLBACK", risk_c * sent_mult_short, tp1r, tp2r, tp3r))
+                sigs.append(("short", "D_PULLBACK", risk_c * pullback_risk_scale * sent_mult_short, tp1r, tp2r, tp3r))
 
             # E_BOS: risk_c (was risk_b) + strengere ADX-filter
-            if bos_be and cl < e21 and rsi_lo <= rsi14 <= rsi_hi - 2 and adx > 22 and h4reg in ("STERK_BEAR", "BEAR"):
+            if (
+                bos_be
+                and cl < e21
+                and rsi_lo <= rsi14 <= rsi_hi - 2
+                and adx >= bos_min_adx
+                and h4sl <= -bos_min_h4_slope
+                and h4reg in ("STERK_BEAR", "BEAR")
+            ):
                 sigs.append(("short", "E_BOS", risk_c * sent_mult_short, tp1r * 0.9, tp2r, tp3r * 0.9))
 
             if mss_be and 35 <= rsi14 <= rsi_hi and cl < e21 and h4reg in ("STERK_BEAR", "BEAR") and h4sl < 0:
