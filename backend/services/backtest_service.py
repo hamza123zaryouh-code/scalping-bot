@@ -12,16 +12,17 @@ Features:
   - Downloadbare rapporten
   - V16 backtest engine (partiële TP, trailing stop, FTMO guardrails)
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, date, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -29,37 +30,38 @@ import pandas as pd
 from backend.api.schemas.backtest import BacktestMetrics, BacktestRequest, BacktestResult, TradeRecord, WeeklySummary
 from backend.api.schemas.common import TaskStatus
 from core.config_watcher import StrategyConfigManager
-from core.strategy_engine import StrategyEngine, DEFAULT_CFG, V18_CFG
+from core.strategy_engine import DEFAULT_CFG, V18_CFG, StrategyEngine
 
 logger = logging.getLogger(__name__)
 
 FTMO_STARTING_CAPITAL = 160_000.0
-FTMO_DAG_EUR = 8_000.0    # 5% van €160k — echte FTMO daggrens
-FTMO_DD_PCT = 0.10        # 10% max totaal verlies vanaf startkapitaal (echte FTMO regel)
+FTMO_DAG_EUR = 8_000.0  # 5% van €160k — echte FTMO daggrens
+FTMO_DD_PCT = 0.10  # 10% max totaal verlies vanaf startkapitaal (echte FTMO regel)
 
-_EUR_USD_RATE = 1.10      # EUR/USD rate voor lot-grootte conversie (update periodiek)
+_EUR_USD_RATE = 1.10  # EUR/USD rate voor lot-grootte conversie (update periodiek)
 
 RESULTS_DIR = Path("results/backtests")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 LATEST_RESULT_PATH = RESULTS_DIR / "latest_backtest.json"
+YFINANCE_CACHE_DIR = RESULTS_DIR / ".yfinance_tz_cache"
 
 
 @dataclass
 class BacktestProgress:
     task_id: str
-    status: str = "pending"      # pending | running | completed | failed
-    progress: float = 0.0        # 0.0 - 1.0
+    status: str = "pending"  # pending | running | completed | failed
+    progress: float = 0.0  # 0.0 - 1.0
     message: str = ""
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
-    result: Optional[BacktestResult] = None
-    error: Optional[str] = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    result: BacktestResult | None = None
+    error: str | None = None
 
 
 @dataclass
 class StoredBacktest:
     task_id: str
-    result: Optional[BacktestResult]
+    result: BacktestResult | None
     status: TaskStatus
     created_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -78,7 +80,7 @@ class BacktestService:
         self._tasks: dict[str, StoredBacktest] = {}
         self._progress: dict[str, BacktestProgress] = {}
         self._history: list[dict] = []
-        self._latest_result: Optional[BacktestResult] = self._load_latest_result()
+        self._latest_result: BacktestResult | None = self._load_latest_result()
 
     def run(self, req: BacktestRequest) -> BacktestResult:
         """
@@ -93,10 +95,7 @@ class BacktestService:
             df = self._fetch_data(req.start_date, req.end_date)
 
             if df.empty or len(df) < 200:
-                raise ValueError(
-                    f"Onvoldoende data: {len(df)} bars. "
-                    f"Minimaal 200 H1 bars vereist."
-                )
+                raise ValueError(f"Onvoldoende data: {len(df)} bars. Minimaal 200 H1 bars vereist.")
 
             # Indicatoren berekenen
             df_feat = self._engine.prepare_features(df)
@@ -169,23 +168,27 @@ class BacktestService:
             )
 
             # History opslaan
-            self._history.append({
-                "task_id": task_id,
-                "start_date": str(req.start_date),
-                "end_date": str(req.end_date),
-                "starting_capital": req.starting_capital,
-                "total_trades": metrics.total_trades,
-                "win_rate": metrics.win_rate,
-                "profit_factor": metrics.profit_factor,
-                "total_return_pct": metrics.total_return_pct,
-                "max_drawdown_pct": metrics.max_drawdown_pct,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            })
+            self._history.append(
+                {
+                    "task_id": task_id,
+                    "start_date": str(req.start_date),
+                    "end_date": str(req.end_date),
+                    "starting_capital": req.starting_capital,
+                    "total_trades": metrics.total_trades,
+                    "win_rate": metrics.win_rate,
+                    "profit_factor": metrics.profit_factor,
+                    "total_return_pct": metrics.total_return_pct,
+                    "max_drawdown_pct": metrics.max_drawdown_pct,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
 
             logger.info(
                 "Backtest voltooid: %d trades, WR=%.1f%%, PF=%.2f, DD=%.1f%%",
-                metrics.total_trades, metrics.win_rate * 100,
-                metrics.profit_factor, metrics.max_drawdown_pct,
+                metrics.total_trades,
+                metrics.win_rate * 100,
+                metrics.profit_factor,
+                metrics.max_drawdown_pct,
             )
 
             return result
@@ -238,7 +241,7 @@ class BacktestService:
             prog.finished_at = datetime.now(timezone.utc)
             logger.error("Async backtest mislukt [%s]: %s", task_id, e)
 
-    def status(self, task_id: str) -> Optional[TaskStatus]:
+    def status(self, task_id: str) -> TaskStatus | None:
         stored = self._tasks.get(task_id)
         if stored:
             return stored.status
@@ -255,7 +258,7 @@ class BacktestService:
             )
         return None
 
-    def result(self, task_id: str) -> Optional[BacktestResult]:
+    def result(self, task_id: str) -> BacktestResult | None:
         stored = self._tasks.get(task_id)
         if stored:
             return stored.result
@@ -268,13 +271,13 @@ class BacktestService:
     def get_history(self) -> list[dict]:
         return list(reversed(self._history[-50:]))  # Laatste 50
 
-    def get_latest_result(self) -> Optional[BacktestResult]:
+    def get_latest_result(self) -> BacktestResult | None:
         if self._latest_result is not None:
             return self._latest_result
         self._latest_result = self._load_latest_result()
         return self._latest_result
 
-    def get_progress(self, task_id: str) -> Optional[dict]:
+    def get_progress(self, task_id: str) -> dict | None:
         prog = self._progress.get(task_id)
         if prog:
             return {
@@ -307,14 +310,15 @@ class BacktestService:
         end_str = end_ts.strftime("%Y-%m-%d")
 
         last_exc: Exception | None = None
+        df = pd.DataFrame()
         for attempt in range(3):
             try:
-                if attempt > 0:
-                    # Disable tz-cache to avoid SQLite temp-dir errors on retry
-                    try:
-                        yf.set_tz_cache_location(None)  # type: ignore[attr-defined]
-                    except AttributeError:
-                        pass
+                cache_dir = YFINANCE_CACHE_DIR / f"attempt_{attempt + 1}"
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    yf.set_tz_cache_location(str(cache_dir))  # type: ignore[attr-defined]
+                except AttributeError:
+                    pass
 
                 df = yf.download(
                     "GC=F",
@@ -324,18 +328,25 @@ class BacktestService:
                     progress=False,
                     auto_adjust=True,
                 )
+                if df.empty:
+                    last_exc = FileNotFoundError("yfinance returned an empty dataset")
+                    logger.warning("yfinance poging %d gaf een lege dataset terug", attempt + 1)
+                    continue
                 break
             except Exception as e:
                 last_exc = e
                 logger.warning("yfinance poging %d mislukt: %s", attempt + 1, e)
         else:
+            if os.getenv("APP_ENV", "").strip().lower() == "test":
+                logger.warning("yfinance niet beschikbaar in testomgeving; gebruik synthetische H1 data")
+                return self._build_synthetic_test_data(start_date, end_date)
             raise FileNotFoundError(f"Data ophalen mislukt na 3 pogingen: {last_exc}") from last_exc
 
         if df.empty:
-            raise FileNotFoundError(
-                "Geen data beschikbaar voor GC=F (Gold Futures). "
-                "Controleer internetverbinding."
-            )
+            if os.getenv("APP_ENV", "").strip().lower() == "test":
+                logger.warning("Lege yfinance dataset in testomgeving; gebruik synthetische H1 data")
+                return self._build_synthetic_test_data(start_date, end_date)
+            raise FileNotFoundError("Geen data beschikbaar voor GC=F (Gold Futures). Controleer internetverbinding.")
 
         df.columns = [c[0].lower() if isinstance(c, tuple) else c.lower() for c in df.columns]
         df.index = pd.to_datetime(df.index, utc=True)
@@ -343,6 +354,47 @@ class BacktestService:
 
         logger.info("Data geladen: %d H1 bars (%s → %s)", len(df), df.index[0].date(), df.index[-1].date())
         return df
+
+    def _build_synthetic_test_data(self, start_date, end_date) -> pd.DataFrame:
+        """Deterministische offline fallback voor test/CI-omgevingen zonder netwerk."""
+        start_with_buffer = pd.Timestamp(start_date, tz="UTC") - pd.Timedelta(days=90)
+        end_ts = pd.Timestamp(end_date, tz="UTC") + pd.Timedelta(days=1)
+        index = pd.date_range(start=start_with_buffer, end=end_ts, freq="1h", inclusive="left", tz="UTC")
+        if len(index) < 250:
+            index = pd.date_range(start=start_with_buffer, periods=250, freq="1h", tz="UTC")
+
+        rng = np.random.default_rng(42)
+        n = len(index)
+        trend = np.linspace(0.0, 120.0, n)
+        slow_wave = 18.0 * np.sin(np.linspace(0.0, 16.0 * np.pi, n))
+        fast_wave = 7.0 * np.sin(np.linspace(0.0, 40.0 * np.pi, n))
+        noise = rng.normal(0.0, 3.5, n).cumsum() * 0.15
+        close = 2050.0 + trend + slow_wave + fast_wave + noise
+        open_ = np.roll(close, 1)
+        open_[0] = close[0] - 1.2
+        open_ = open_ + rng.normal(0.0, 1.2, n)
+        spread = np.abs(rng.normal(2.8, 1.0, n)) + 0.6
+        high = np.maximum(open_, close) + spread
+        low = np.minimum(open_, close) - spread
+        volume = rng.integers(900, 4500, n).astype(float)
+
+        frame = pd.DataFrame(
+            {
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+            },
+            index=index,
+        )
+        logger.info(
+            "Synthetische testdata geladen: %d H1 bars (%s -> %s)",
+            len(frame),
+            frame.index[0].date(),
+            frame.index[-1].date(),
+        )
+        return frame
 
     # ─────────────────────────────────────────────────────────────
     # BACKTEST ENGINE (V16 logica — identiek aan strategy_v16.py)
@@ -397,8 +449,8 @@ class BacktestService:
         loss_day_filter = bool(cfg.get("loss_day_filter", False))
         # V20: maanddoel + 3-weken reset
         monthly_profit_target = float(cfg.get("monthly_profit_target", 0.0))  # 0 = uitgeschakeld
-        reset_weeks           = int(cfg.get("reset_weeks", 0))                # 0 = geen reset
-        reset_capital_amount  = float(cfg.get("reset_capital", starting_capital))
+        reset_weeks = int(cfg.get("reset_weeks", 0))  # 0 = geen reset
+        reset_capital_amount = float(cfg.get("reset_capital", starting_capital))
 
         kap = float(starting_capital)
         piek = kap
@@ -407,7 +459,7 @@ class BacktestService:
 
         # V20: banked profit (winst van eerdere reset-cycli) + maand-tracking
         _banked_profit: float = 0.0
-        _next_reset_date: Optional[date] = None  # wordt gezet bij eerste bar
+        _next_reset_date: date | None = None  # wordt gezet bij eerste bar
         _current_month_str: str = ""
         _month_start_equity: float = kap  # equity bij begin van maand (banked=0 bij start)
 
@@ -422,17 +474,15 @@ class BacktestService:
 
         # Weekly compound tracking
         _week_start_equity = kap
-        _current_week: Optional[int] = None
+        _current_week: int | None = None
         _compound_multiplier = 1.0
         # Weekly & daily PnL tracking voor verliesbescherming
-        _week_pnl: dict[int, float] = {}   # week_num → gerealiseerde PnL deze week
+        _week_pnl: dict[int, float] = {}  # week_num → gerealiseerde PnL deze week
         _day_net_pnl: dict[date, float] = {}  # datum → netto PnL die dag
 
         for i in range(120, len(df)):
             b = df.iloc[i]
             bar_date = b.name.date()
-            uur = b.name.hour
-            dow = b.name.weekday()
 
             if bar_date not in dag:
                 dag[bar_date] = {"loss": 0.0, "n": 0, "sl": 0}
@@ -455,7 +505,22 @@ class BacktestService:
                     pnl_r = risk_rem * ((ep - entry) / max(sl_dist_r, 0.001) * richting)
                     kap += pnl_r
                     cum_equity = _banked_profit + kap
-                    trs.append(self._make_tr(ot, b.name, richting, entry, ep, pnl_r, "RESET", sig_type, sl, tp1, cum_equity, _open_lot_size))
+                    trs.append(
+                        self._make_tr(
+                            ot,
+                            b.name,
+                            richting,
+                            entry,
+                            ep,
+                            pnl_r,
+                            "RESET",
+                            sig_type,
+                            sl,
+                            tp1,
+                            cum_equity,
+                            _open_lot_size,
+                        )
+                    )
                     ip = False
                 # Bankeer alles boven reset_capital_amount
                 _banked_profit += max(0.0, kap - reset_capital_amount)
@@ -496,7 +561,11 @@ class BacktestService:
                     pnl = richting * (ep - entry) / max(abs(entry - sl), 0.001) * risk_rem
                     kap += pnl
                     cum_equity = _banked_profit + kap
-                    trs.append(self._make_tr(ot, b.name, richting, entry, ep, pnl, "FAIL", sig_type, sl, tp1, cum_equity, _open_lot_size))
+                    trs.append(
+                        self._make_tr(
+                            ot, b.name, richting, entry, ep, pnl, "FAIL", sig_type, sl, tp1, cum_equity, _open_lot_size
+                        )
+                    )
                     ip = False
                 break
 
@@ -529,17 +598,34 @@ class BacktestService:
 
                 # TP1
                 if not tp1_hit:
-                    if ((richting == 1 and hi >= tp1) or (richting == -1 and lo <= tp1)):
+                    if (richting == 1 and hi >= tp1) or (richting == -1 and lo <= tp1):
                         if not ((richting == 1 and lo <= sl) or (richting == -1 and hi >= sl)):
                             pnl_tp1 = tp1_pct * risk_rem * ((tp1 - entry) / sl_dist * richting)
                             kap += pnl_tp1
-                            if kap > piek: piek = kap
+                            if kap > piek:
+                                piek = kap
                             cum_equity = _banked_profit + kap
-                            trs.append(self._make_tr(ot, b.name, richting, entry, tp1, pnl_tp1, "TP1", sig_type, sl, tp1, cum_equity, _open_lot_size))
-                            risk_rem *= (1.0 - tp1_pct)
+                            trs.append(
+                                self._make_tr(
+                                    ot,
+                                    b.name,
+                                    richting,
+                                    entry,
+                                    tp1,
+                                    pnl_tp1,
+                                    "TP1",
+                                    sig_type,
+                                    sl,
+                                    tp1,
+                                    cum_equity,
+                                    _open_lot_size,
+                                )
+                            )
+                            risk_rem *= 1.0 - tp1_pct
                             tp1_hit = True
                             _day_net_pnl[bar_date] = _day_net_pnl.get(bar_date, 0.0) + pnl_tp1
-                            if _current_week: _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_tp1
+                            if _current_week:
+                                _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_tp1
 
                 # TP2
                 if tp1_hit and not tp2_hit:
@@ -547,25 +633,59 @@ class BacktestService:
                     if (richting == 1 and hi >= tp2) or (richting == -1 and lo <= tp2):
                         pnl_tp2 = tp2_frac * risk_rem * ((tp2 - entry) / sl_dist * richting)
                         kap += pnl_tp2
-                        if kap > piek: piek = kap
+                        if kap > piek:
+                            piek = kap
                         cum_equity = _banked_profit + kap
-                        trs.append(self._make_tr(ot, b.name, richting, entry, tp2, pnl_tp2, "TP2", sig_type, sl, tp2, cum_equity, _open_lot_size))
-                        risk_rem *= (1.0 - tp2_frac)
+                        trs.append(
+                            self._make_tr(
+                                ot,
+                                b.name,
+                                richting,
+                                entry,
+                                tp2,
+                                pnl_tp2,
+                                "TP2",
+                                sig_type,
+                                sl,
+                                tp2,
+                                cum_equity,
+                                _open_lot_size,
+                            )
+                        )
+                        risk_rem *= 1.0 - tp2_frac
                         tp2_hit = True
                         _day_net_pnl[bar_date] = _day_net_pnl.get(bar_date, 0.0) + pnl_tp2
-                        if _current_week: _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_tp2
+                        if _current_week:
+                            _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_tp2
 
                 # TP3
                 if tp1_hit and tp2_hit:
                     if (richting == 1 and hi >= tp3) or (richting == -1 and lo <= tp3):
                         pnl_tp3 = risk_rem * ((tp3 - entry) / sl_dist * richting)
                         kap += pnl_tp3
-                        if kap > piek: piek = kap
+                        if kap > piek:
+                            piek = kap
                         cum_equity = _banked_profit + kap
-                        trs.append(self._make_tr(ot, b.name, richting, entry, tp3, pnl_tp3, "TP3", sig_type, sl, tp3, cum_equity, _open_lot_size))
+                        trs.append(
+                            self._make_tr(
+                                ot,
+                                b.name,
+                                richting,
+                                entry,
+                                tp3,
+                                pnl_tp3,
+                                "TP3",
+                                sig_type,
+                                sl,
+                                tp3,
+                                cum_equity,
+                                _open_lot_size,
+                            )
+                        )
                         ip = False
                         _day_net_pnl[bar_date] = _day_net_pnl.get(bar_date, 0.0) + pnl_tp3
-                        if _current_week: _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_tp3
+                        if _current_week:
+                            _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_tp3
                         continue
 
                 # SL check
@@ -579,12 +699,18 @@ class BacktestService:
                         dag[bar_date]["loss"] += abs(pnl_sl)
                         dag[bar_date]["sl"] += 1
                     kap += pnl_sl
-                    if kap > piek: piek = kap
+                    if kap > piek:
+                        piek = kap
                     cum_equity = _banked_profit + kap
-                    trs.append(self._make_tr(ot, b.name, richting, entry, sl, pnl_sl, "SL", sig_type, sl, tp1, cum_equity, _open_lot_size))
+                    trs.append(
+                        self._make_tr(
+                            ot, b.name, richting, entry, sl, pnl_sl, "SL", sig_type, sl, tp1, cum_equity, _open_lot_size
+                        )
+                    )
                     ip = False
                     _day_net_pnl[bar_date] = _day_net_pnl.get(bar_date, 0.0) + pnl_sl
-                    if _current_week: _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_sl
+                    if _current_week:
+                        _week_pnl[_current_week] = _week_pnl.get(_current_week, 0.0) + pnl_sl
 
             if ip:
                 continue
@@ -596,19 +722,25 @@ class BacktestService:
                     continue
 
             # Entry condities
-            if dag[bar_date]["loss"] >= ftmo_dag_eur * 0.65: continue
-            if dag[bar_date]["n"] >= max_dag: continue
-            if dag[bar_date]["sl"] >= sl_dag_max: continue
-            if (i - last_i) < cool_h: continue
+            if dag[bar_date]["loss"] >= ftmo_dag_eur * 0.65:
+                continue
+            if dag[bar_date]["n"] >= max_dag:
+                continue
+            if dag[bar_date]["sl"] >= sl_dag_max:
+                continue
+            if (i - last_i) < cool_h:
+                continue
 
             # Sessie check
             tier = self._engine.get_session(b.name.to_pydatetime())
-            if tier == "blocked": continue
+            if tier == "blocked":
+                continue
 
             # ── Signaal genereren ───────────────────────────────────
-            signal = self._engine.generate_signal(df.iloc[max(0, i - 300):i + 1], cfg=cfg)
+            signal = self._engine.generate_signal(df.iloc[max(0, i - 300) : i + 1], cfg=cfg)
 
-            if signal is None: continue
+            if signal is None:
+                continue
 
             sig_type = signal.signal_type
             rich_str = signal.direction
@@ -621,21 +753,28 @@ class BacktestService:
             # ── Verliesdag-filter: na 2 opeenvolgende verlies-dagen → alleen A/B/F ──
             if loss_day_filter:
                 prev_days = sorted(d for d in _day_net_pnl if d < bar_date)[-2:]
-                if (len(prev_days) >= 2
-                        and all(_day_net_pnl[d] < 0 for d in prev_days)
-                        and sig_type not in ("A_EMACROSS", "B_MACDCROSS", "F_MSS")):
+                if (
+                    len(prev_days) >= 2
+                    and all(_day_net_pnl[d] < 0 for d in prev_days)
+                    and sig_type not in ("A_EMACROSS", "B_MACDCROSS", "F_MSS")
+                ):
                     continue
 
             # Drawdown risk scaling
             dd_pct = (piek - kap) / max(piek, 1)
-            if dd_pct > 0.05:     risk_pct *= 0.25
-            elif dd_pct > 0.04:   risk_pct *= 0.40
-            elif dd_pct > 0.03:   risk_pct *= 0.60
-            elif dd_pct > 0.01:   risk_pct *= 0.80
+            if dd_pct > 0.05:
+                risk_pct *= 0.25
+            elif dd_pct > 0.04:
+                risk_pct *= 0.40
+            elif dd_pct > 0.03:
+                risk_pct *= 0.60
+            elif dd_pct > 0.01:
+                risk_pct *= 0.80
 
             # Loss streak scaling
             recent_sl = sum(1 for t in trs[-4:] if t["result"] == "SL" and t["pnl"] < 0)
-            if recent_sl >= 3: risk_pct *= 0.50
+            if recent_sl >= 3:
+                risk_pct *= 0.50
 
             # ── Verliesweek-bescherming: risico verlagen als week al in de min zit ──
             if weekly_loss_threshold > 0 and _current_week is not None:
@@ -654,7 +793,8 @@ class BacktestService:
             tp3 = signal.take_profit_3
 
             sl_dist = abs(cl_pr - sl)
-            if sl_dist <= 0: continue
+            if sl_dist <= 0:
+                continue
 
             risk_usd = kap * risk_pct * _compound_multiplier
             risk_rem = risk_usd
@@ -682,17 +822,27 @@ class BacktestService:
             pnl = risk_rem * ((ep - entry) / max(sl_dist, 0.001) * richting)
             kap += pnl
             cum_equity = _banked_profit + kap
-            trs.append(self._make_tr(ot, df.index[-1], richting, entry, ep, pnl, "OPEN", sig_type, sl, tp1, cum_equity, _open_lot_size))
+            trs.append(
+                self._make_tr(
+                    ot, df.index[-1], richting, entry, ep, pnl, "OPEN", sig_type, sl, tp1, cum_equity, _open_lot_size
+                )
+            )
 
         return trs, _banked_profit + kap
 
     @staticmethod
     def _make_tr(ti, to, rich, entry, exit_p, pnl, result, stype, sl=0, tp1=0, cum_equity=0, lot_size=0.01) -> dict:
         return {
-            "in": str(ti), "uit": str(to), "rich": rich,
-            "entry": round(float(entry), 2), "exit": round(float(exit_p), 2),
-            "sl": round(float(sl), 2), "tp1": round(float(tp1), 2),
-            "pnl": round(float(pnl), 2), "result": result, "type": stype,
+            "in": str(ti),
+            "uit": str(to),
+            "rich": rich,
+            "entry": round(float(entry), 2),
+            "exit": round(float(exit_p), 2),
+            "sl": round(float(sl), 2),
+            "tp1": round(float(tp1), 2),
+            "pnl": round(float(pnl), 2),
+            "result": result,
+            "type": stype,
             "cum_equity": round(float(cum_equity), 2),
             "lot_size": round(float(lot_size), 2),
         }
@@ -751,7 +901,7 @@ class BacktestService:
         if trades.empty or "in" not in trades.columns:
             return []
         monthly = trades.copy()
-        monthly["month"] = pd.to_datetime(monthly["in"]).dt.to_period("M").astype(str)
+        monthly["month"] = pd.to_datetime(monthly["in"], utc=True).dt.tz_convert(None).dt.to_period("M").astype(str)
         grouped = (
             monthly.groupby("month")
             .agg(
@@ -788,8 +938,8 @@ class BacktestService:
         weekly["equity_after"] = starting + weekly["pnl"].cumsum()
         iso = weekly["closed_at"].dt.isocalendar()
         weekly["week"] = iso.year.astype(str) + "-W" + iso.week.astype(str).str.zfill(2)
-        weekly["week_start"] = (
-            weekly["closed_at"].dt.normalize() - pd.to_timedelta(weekly["closed_at"].dt.weekday, unit="D")
+        weekly["week_start"] = weekly["closed_at"].dt.normalize() - pd.to_timedelta(
+            weekly["closed_at"].dt.weekday, unit="D"
         )
 
         grouped = (
@@ -830,11 +980,13 @@ class BacktestService:
         equity = starting
         for _, row in trades.iterrows():
             equity += float(row.get("pnl", 0))
-            result.append({
-                "timestamp": str(row.get("uit", "")),
-                "capital": round(equity, 2),
-                "pnl": round(float(row.get("pnl", 0)), 2),
-            })
+            result.append(
+                {
+                    "timestamp": str(row.get("uit", "")),
+                    "capital": round(equity, 2),
+                    "pnl": round(float(row.get("pnl", 0)), 2),
+                }
+            )
         return result
 
     def _feed_ml_memory(self, trades: list[dict], df_feat: pd.DataFrame) -> None:
@@ -847,8 +999,8 @@ class BacktestService:
         het live model ze kan onderscheiden van echte trades.
         """
         try:
-            from ml.pattern_memory import PatternMemory
             from ml.feedback_engine import FeedbackEngine, TradeFeatureRecord
+            from ml.pattern_memory import PatternMemory
         except ImportError:
             logger.debug("ML modules niet beschikbaar — backtest bridge overgeslagen")
             return
@@ -947,7 +1099,7 @@ class BacktestService:
         payload = result.model_dump(mode="json")
         LATEST_RESULT_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-    def _load_latest_result(self) -> Optional[BacktestResult]:
+    def _load_latest_result(self) -> BacktestResult | None:
         if not LATEST_RESULT_PATH.exists():
             return None
         try:

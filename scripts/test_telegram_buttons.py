@@ -6,19 +6,20 @@ Run this to verify the bot token + chat_id work and that buttons appear.
 Usage:
     python scripts/test_telegram_buttons.py
 """
+
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
-from dotenv import load_dotenv
 load_dotenv(_ROOT / ".env")
-
-import os
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -51,13 +52,19 @@ async def main() -> None:
 
     # Test 2: send a message with buttons
     print("Sending test message with buttons to chat...")
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Bot werkt!", callback_data="test:ok")],
-        [InlineKeyboardButton("📊 Dashboard", callback_data="menu:dashboard"),
-         InlineKeyboardButton("⚙️ Control", callback_data="menu:control")],
-        [InlineKeyboardButton("🛡 Risk", callback_data="menu:risk"),
-         InlineKeyboardButton("📡 Signals", callback_data="menu:signals")],
-    ])
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Bot werkt!", callback_data="test:ok")],
+            [
+                InlineKeyboardButton("📊 Dashboard", callback_data="menu:dashboard"),
+                InlineKeyboardButton("⚙️ Control", callback_data="menu:control"),
+            ],
+            [
+                InlineKeyboardButton("🛡 Risk", callback_data="menu:risk"),
+                InlineKeyboardButton("📡 Signals", callback_data="menu:signals"),
+            ],
+        ]
+    )
 
     msg = await bot.send_message(
         chat_id=CHAT_ID,
@@ -77,15 +84,16 @@ async def main() -> None:
     print("Press Ctrl+C to stop early.")
     print()
 
-    from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
     from telegram import Update
+    from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
     app = Application.builder().token(BOT_TOKEN).build()
 
     async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.effective_message:
             await update.effective_message.reply_text(
-                "✅ /start werkt! Bot is operationeel.\n\nStuur /start wanneer de echte bot draait voor het volledige menu.",
+                "✅ /start werkt! Bot is operationeel.\n\n"
+                "Stuur /start wanneer de echte bot draait voor het volledige menu.",
                 reply_markup=keyboard,
             )
 

@@ -9,6 +9,9 @@ from typing import Any
 
 import httpx
 
+from autonomous_xauusd.memory_layer import MemoryLayer
+from autonomous_xauusd.settings import load_settings
+
 _MAX_TG_LEN = 4000
 _TRUNCATED_SUFFIX = "\n…(ingekort)"
 
@@ -18,12 +21,10 @@ def _truncate(text: str) -> str:
         return text
     return text[: _MAX_TG_LEN - len(_TRUNCATED_SUFFIX)] + _TRUNCATED_SUFFIX
 
-from autonomous_xauusd.memory_layer import MemoryLayer
-from autonomous_xauusd.settings import load_settings
 
 try:
-    from telegram.error import Conflict, TelegramError
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+    from telegram.error import Conflict, TelegramError
     from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
     TELEGRAM_AVAILABLE = True
@@ -42,15 +43,19 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramBackendClient:
-    def __init__(self, api_key: str, base_url: str) -> None:
+    def __init__(self, api_key: str, base_url: str, telegram_user_id: str) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+        self.telegram_user_id = telegram_user_id
         self.available = bool(base_url)
 
     async def get(self, path: str) -> dict[str, Any]:
         async with httpx.AsyncClient(
             base_url=self.base_url,
-            headers={"X-API-Key": self.api_key},
+            headers={
+                "X-API-Key": self.api_key,
+                "X-Telegram-User-Id": self.telegram_user_id,
+            },
             timeout=120.0,
         ) as client:
             response = await client.get(path)
@@ -60,7 +65,10 @@ class TelegramBackendClient:
     async def post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         async with httpx.AsyncClient(
             base_url=self.base_url,
-            headers={"X-API-Key": self.api_key},
+            headers={
+                "X-API-Key": self.api_key,
+                "X-Telegram-User-Id": self.telegram_user_id,
+            },
             timeout=120.0,
         ) as client:
             response = await client.post(path, json=payload)
@@ -92,7 +100,11 @@ class TelegramControlLayer:
         self._polling_stop = threading.Event()
         self._polling_conflict = threading.Event()
         self._callback_last_time: dict[str, float] = {}
-        self._backend = TelegramBackendClient(api_key=backend_api_key, base_url=backend_base_url)
+        self._backend = TelegramBackendClient(
+            api_key=backend_api_key,
+            base_url=backend_base_url,
+            telegram_user_id=self.owner_user_id,
+        )
         self._memory = MemoryLayer(load_settings().database_url)
         self._memory.initialize()
 
@@ -132,9 +144,7 @@ class TelegramControlLayer:
         try:
             asyncio.run(self._run_application())
         except Conflict:
-            logger.warning(
-                "Telegram polling disabled because another bot instance is already consuming updates."
-            )
+            logger.warning("Telegram polling disabled because another bot instance is already consuming updates.")
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("Telegram polling stopped: %s", exc)
         finally:
@@ -171,9 +181,7 @@ class TelegramControlLayer:
     def _handle_polling_error(self, error: TelegramError) -> None:
         if isinstance(error, Conflict):
             if not self._polling_conflict.is_set():
-                logger.warning(
-                    "Telegram polling conflict detected; stopping local poller so logs stay clean."
-                )
+                logger.warning("Telegram polling conflict detected; stopping local poller so logs stay clean.")
             self._polling_conflict.set()
             return
 
@@ -200,7 +208,9 @@ class TelegramControlLayer:
             text = fallback_text or "Backend tijdelijk niet beschikbaar. Probeer opnieuw."
             return {"data": {"summary": text}}
 
-    async def _backend_post(self, path: str, payload: dict[str, Any], fallback_text: str | None = None) -> dict[str, Any]:
+    async def _backend_post(
+        self, path: str, payload: dict[str, Any], fallback_text: str | None = None
+    ) -> dict[str, Any]:
         """POST via backend; returns a synthetic response dict on connectivity failure."""
         try:
             return await self._backend.post(path, payload)
@@ -291,7 +301,9 @@ class TelegramControlLayer:
             return
 
         payload = self._identity_payload(update, confirmed=True)
-        stop_fallback = self.stop_callback() if action in ("emergency_stop", "stop_bot") and self.stop_callback else None
+        stop_fallback = (
+            self.stop_callback() if action in ("emergency_stop", "stop_bot") and self.stop_callback else None
+        )
         response = await self._backend_post(f"/api/v1/telegram/control/{action}", payload, fallback_text=stop_fallback)
         text = response["data"]["summary"]
         self._log_user_action(update, action, "confirmed", {"response": text})
@@ -313,8 +325,12 @@ class TelegramControlLayer:
         elif data.startswith("control:"):
             action = data.split(":", 1)[1]
             payload = self._identity_payload(update)
-            stop_fallback = self.stop_callback() if action in ("emergency_stop", "stop_bot") and self.stop_callback else None
-            response = await self._backend_post(f"/api/v1/telegram/control/{action}", payload, fallback_text=stop_fallback)
+            stop_fallback = (
+                self.stop_callback() if action in ("emergency_stop", "stop_bot") and self.stop_callback else None
+            )
+            response = await self._backend_post(
+                f"/api/v1/telegram/control/{action}", payload, fallback_text=stop_fallback
+            )
             result = response["data"]
             if result.get("requires_confirmation"):
                 self._log_user_action(update, action, "confirmation_required", {})
@@ -362,7 +378,9 @@ class TelegramControlLayer:
             keyboard = self._menu_keyboard("backtest")
         elif data == "memory:train":
             train_fallback = self.train_callback() if self.train_callback else None
-            response = await self._backend_post("/api/v1/telegram/memory/train", self._identity_payload(update), fallback_text=train_fallback)
+            response = await self._backend_post(
+                "/api/v1/telegram/memory/train", self._identity_payload(update), fallback_text=train_fallback
+            )
             text = response["data"]["summary"]
             keyboard = self._menu_keyboard("memory")
         elif data.startswith("memory:"):
@@ -397,7 +415,9 @@ class TelegramControlLayer:
             await query.answer("Geen toegang", show_alert=True)
             return
         if update.effective_message:
-            await update.effective_message.reply_text("Geen toegang. Alleen de geconfigureerde owner kan deze bot bedienen.")
+            await update.effective_message.reply_text(
+                "Geen toegang. Alleen de geconfigureerde owner kan deze bot bedienen."
+            )
 
     def _is_authorized(self, update: Update) -> bool:
         if not self.owner_user_id:
@@ -462,10 +482,22 @@ class TelegramControlLayer:
         return InlineKeyboardMarkup(
             [
                 [InlineKeyboardButton("Account Status", callback_data="status:account_status")],
-                [InlineKeyboardButton("Equity", callback_data="status:equity"), InlineKeyboardButton("Balance", callback_data="status:balance")],
-                [InlineKeyboardButton("Open PnL", callback_data="status:open_pnl"), InlineKeyboardButton("Daily PnL", callback_data="status:daily_pnl")],
-                [InlineKeyboardButton("Weekly PnL", callback_data="status:weekly_pnl"), InlineKeyboardButton("Monthly PnL", callback_data="status:monthly_pnl")],
-                [InlineKeyboardButton("Drawdown", callback_data="status:drawdown"), InlineKeyboardButton("FTMO Status", callback_data="status:ftmo_status")],
+                [
+                    InlineKeyboardButton("Equity", callback_data="status:equity"),
+                    InlineKeyboardButton("Balance", callback_data="status:balance"),
+                ],
+                [
+                    InlineKeyboardButton("Open PnL", callback_data="status:open_pnl"),
+                    InlineKeyboardButton("Daily PnL", callback_data="status:daily_pnl"),
+                ],
+                [
+                    InlineKeyboardButton("Weekly PnL", callback_data="status:weekly_pnl"),
+                    InlineKeyboardButton("Monthly PnL", callback_data="status:monthly_pnl"),
+                ],
+                [
+                    InlineKeyboardButton("Drawdown", callback_data="status:drawdown"),
+                    InlineKeyboardButton("FTMO Status", callback_data="status:ftmo_status"),
+                ],
                 [InlineKeyboardButton("Refresh Overview", callback_data="status:overview")],
                 [InlineKeyboardButton("⬅️ Main Menu", callback_data="menu:main")],
             ]
@@ -474,8 +506,14 @@ class TelegramControlLayer:
     def _control_keyboard(self):
         return InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("Start Bot", callback_data="control:start_bot"), InlineKeyboardButton("Stop Bot", callback_data="control:stop_bot")],
-                [InlineKeyboardButton("Pause Trading", callback_data="control:pause_trading"), InlineKeyboardButton("Resume Trading", callback_data="control:resume_trading")],
+                [
+                    InlineKeyboardButton("Start Bot", callback_data="control:start_bot"),
+                    InlineKeyboardButton("Stop Bot", callback_data="control:stop_bot"),
+                ],
+                [
+                    InlineKeyboardButton("Pause Trading", callback_data="control:pause_trading"),
+                    InlineKeyboardButton("Resume Trading", callback_data="control:resume_trading"),
+                ],
                 [InlineKeyboardButton("Emergency Stop", callback_data="control:emergency_stop")],
                 [InlineKeyboardButton("Close All Positions", callback_data="control:close_all_positions")],
                 [InlineKeyboardButton("⬅️ Main Menu", callback_data="menu:main")],
@@ -544,7 +582,10 @@ class TelegramControlLayer:
     def _confirmation_keyboard(self, action: str):
         return InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("Yes", callback_data=f"confirm:{action}:yes"), InlineKeyboardButton("No", callback_data=f"confirm:{action}:no")],
+                [
+                    InlineKeyboardButton("Yes", callback_data=f"confirm:{action}:yes"),
+                    InlineKeyboardButton("No", callback_data=f"confirm:{action}:no"),
+                ],
             ]
         )
 
@@ -570,8 +611,7 @@ class TelegramControlLayer:
             "weekly_pnl": f"Weekly PnL\n€{float(data.get('weekly_pnl', 0.0)):,.2f}",
             "monthly_pnl": f"Monthly PnL\n€{float(data.get('monthly_pnl', 0.0)):,.2f}",
             "drawdown": (
-                f"Drawdown\n€{float(data.get('drawdown', 0.0)):,.2f}\n"
-                f"{float(data.get('drawdown_pct', 0.0)):.2f}%"
+                f"Drawdown\n€{float(data.get('drawdown', 0.0)):,.2f}\n{float(data.get('drawdown_pct', 0.0)):.2f}%"
             ),
             "ftmo_status": (
                 "FTMO Status\n"

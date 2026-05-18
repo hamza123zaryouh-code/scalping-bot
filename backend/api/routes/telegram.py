@@ -6,16 +6,16 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from backend.api.deps import assert_telegram_owner, require_telegram_api_key
-from backend.core.config import Settings, get_settings
+from autonomous_xauusd.settings import load_settings as _load_bot_settings
+from backend.api.deps import assert_telegram_owner, require_telegram_api_key, require_telegram_owner_header
 from backend.api.schemas.common import APIResponse
 from backend.api.schemas.telegram import (
     TelegramActionRequest,
     TelegramActionResponse,
     TelegramToggleRequest,
 )
+from backend.core.config import Settings, get_settings
 from backend.services.telegram_service import TelegramService
-from autonomous_xauusd.settings import load_settings as _load_bot_settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -34,7 +34,10 @@ def _get_service() -> TelegramService:
 
 
 @router.get("/status", response_model=APIResponse[dict], summary="Telegram dashboard status")
-async def telegram_status(_key: str = Depends(require_telegram_api_key)):
+async def telegram_status(
+    _key: str = Depends(require_telegram_api_key),
+    _owner: str = Depends(require_telegram_owner_header),
+):
     return APIResponse(data=_get_service().get_status_overview())
 
 
@@ -60,7 +63,11 @@ async def telegram_control(
 
 
 @router.get("/risk/{section}", response_model=APIResponse[dict], summary="Telegram risk snapshots")
-async def telegram_risk(section: str, _key: str = Depends(require_telegram_api_key)):
+async def telegram_risk(
+    section: str,
+    _key: str = Depends(require_telegram_api_key),
+    _owner: str = Depends(require_telegram_owner_header),
+):
     try:
         return APIResponse(data=_get_service().get_risk_status(section), message="Risk snapshot loaded")
     except ValueError as exc:
@@ -68,7 +75,11 @@ async def telegram_risk(section: str, _key: str = Depends(require_telegram_api_k
 
 
 @router.get("/signals/{section}", response_model=APIResponse[dict], summary="Telegram signal snapshots")
-async def telegram_signals(section: str, _key: str = Depends(require_telegram_api_key)):
+async def telegram_signals(
+    section: str,
+    _key: str = Depends(require_telegram_api_key),
+    _owner: str = Depends(require_telegram_owner_header),
+):
     try:
         return APIResponse(data=_get_service().get_signal_snapshot(section), message="Signal snapshot loaded")
     except ValueError as exc:
@@ -112,19 +123,28 @@ async def telegram_quick_backtest(
 
 
 @router.get("/backtest/latest", response_model=APIResponse[dict], summary="Latest backtest result")
-async def telegram_backtest_latest(_key: str = Depends(require_telegram_api_key)):
+async def telegram_backtest_latest(
+    _key: str = Depends(require_telegram_api_key),
+    _owner: str = Depends(require_telegram_owner_header),
+):
     result = _get_service().get_latest_backtest_result()
     return APIResponse(data=result, message=result["summary"])
 
 
 @router.get("/backtest/compare", response_model=APIResponse[dict], summary="Compare baseline with latest backtest")
-async def telegram_backtest_compare(_key: str = Depends(require_telegram_api_key)):
+async def telegram_backtest_compare(
+    _key: str = Depends(require_telegram_api_key),
+    _owner: str = Depends(require_telegram_owner_header),
+):
     result = _get_service().compare_strategy_versions()
     return APIResponse(data=result, message=result["summary"])
 
 
 @router.get("/backtest/equity-curve-summary", response_model=APIResponse[dict], summary="Equity curve summary")
-async def telegram_backtest_equity_curve(_key: str = Depends(require_telegram_api_key)):
+async def telegram_backtest_equity_curve(
+    _key: str = Depends(require_telegram_api_key),
+    _owner: str = Depends(require_telegram_owner_header),
+):
     result = _get_service().get_equity_curve_summary()
     return APIResponse(data=result, message=result["summary"])
 
@@ -146,7 +166,11 @@ async def telegram_train_ai(
 
 
 @router.get("/memory/{section}", response_model=APIResponse[dict], summary="Telegram AI memory snapshots")
-async def telegram_memory(section: str, _key: str = Depends(require_telegram_api_key)):
+async def telegram_memory(
+    section: str,
+    _key: str = Depends(require_telegram_api_key),
+    _owner: str = Depends(require_telegram_owner_header),
+):
     try:
         result = _get_service().get_memory_snapshot(section)
     except ValueError as exc:
@@ -155,7 +179,11 @@ async def telegram_memory(section: str, _key: str = Depends(require_telegram_api
 
 
 @router.get("/reports/{period}", response_model=APIResponse[dict], summary="Telegram report summary")
-async def telegram_report(period: str, _key: str = Depends(require_telegram_api_key)):
+async def telegram_report(
+    period: str,
+    _key: str = Depends(require_telegram_api_key),
+    _owner: str = Depends(require_telegram_owner_header),
+):
     try:
         result = _get_service().build_report_snapshot(period)
     except ValueError as exc:
@@ -175,5 +203,8 @@ async def telegram_export_trade_log(
 
 
 @router.get("/audit", response_model=APIResponse[dict], summary="Recent Telegram audit trail")
-async def telegram_audit(_key: str = Depends(require_telegram_api_key)):
+async def telegram_audit(
+    _key: str = Depends(require_telegram_api_key),
+    _owner: str = Depends(require_telegram_owner_header),
+):
     return APIResponse(data=_get_service().recent_action_logs(), message="Recent Telegram audit trail loaded")

@@ -16,7 +16,7 @@ from .models import ClosedTradeResult, ExecutionResult, SignalDecision, Strategy
 from .settings import XAUUSDSettings
 
 try:
-    import MetaTrader5 as mt5
+    import MetaTrader5 as mt5  # noqa: N813
 except ImportError:  # pragma: no cover
     mt5 = None
 
@@ -107,7 +107,9 @@ class DataExecutionLayer:
                     "sl": position["stop_loss"],
                     "tp": position["take_profit"],
                     "profit": 0.0,
-                    "time": int(position["opened_at"].timestamp()) if hasattr(position["opened_at"], "timestamp") else 0,
+                    "time": int(position["opened_at"].timestamp())
+                    if hasattr(position["opened_at"], "timestamp")
+                    else 0,
                 }
                 for ticket, position in self.paper_positions.items()
             ]
@@ -456,8 +458,8 @@ class DataExecutionLayer:
     def _resolve_yfinance_symbol(self, symbol: str) -> str:
         # XAUUSD / forex paren → yfinance tickers (paper mode / fallback)
         aliases = {
-            "XAUUSD": "GC=F",       # Gold futures — primair
-            "XAGUSD": "SI=F",        # Silver futures
+            "XAUUSD": "GC=F",  # Gold futures — primair
+            "XAGUSD": "SI=F",  # Silver futures
             "EURUSD": "EURUSD=X",
             "GBPUSD": "GBPUSD=X",
             "USDJPY": "JPY=X",
@@ -470,4 +472,3 @@ class DataExecutionLayer:
             "EURJPY": "EURJPY=X",
         }
         return aliases.get(symbol.upper(), symbol)
-

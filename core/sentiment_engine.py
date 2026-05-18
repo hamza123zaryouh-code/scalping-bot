@@ -23,6 +23,7 @@ Gebruik:
   result = engine.get_sentiment()
   modifier = engine.get_risk_modifier("long")  # 0.5 - 1.3
 """
+
 from __future__ import annotations
 
 import logging
@@ -30,7 +31,6 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -38,87 +38,206 @@ logger = logging.getLogger(__name__)
 # GOLD SENTIMENT KEYWORDS
 # ─────────────────────────────────────────────────────────────────
 
-_BULLISH_GOLD = frozenset({
-    # USD zwakte
-    "dollar falls", "dollar weakens", "dollar drops", "dxy falls", "dollar index falls",
-    "weak dollar", "dollar lower", "dollar decline", "usd weakness",
-    # Fed dovish
-    "rate cut", "rate cuts", "fed cut", "dovish", "pause rate", "rate pause",
-    "fed holds", "lower rates", "easy monetary", "quantitative easing", "qe",
-    "fed pivot", "rate reduction", "accommodative",
-    # Inflatie / safe haven
-    "inflation rises", "inflation higher", "cpi beats", "pce higher",
-    "real yields fall", "negative real rates", "inflation fears", "stagflation",
-    # Geopolitiek
-    "war", "conflict", "geopolit", "crisis", "safe haven", "flight to safety",
-    "uncertainty", "tension", "sanctions", "middle east", "ukraine", "russia",
-    "recession fears", "recession risk", "slowdown", "bank crisis", "banking stress",
-    "debt ceiling", "default risk", "economic weakness",
-    # Centrale bank goud
-    "central bank buying", "gold reserves", "central bank gold", "gold purchases",
-    "de-dollarization", "brics gold", "gold demand", "etf inflows",
-    # Markt
-    "gold rally", "gold gains", "gold rises", "gold surge", "gold jumps",
-    "gold breakout", "gold record", "gold high", "gold bull",
-})
+_BULLISH_GOLD = frozenset(
+    {
+        # USD zwakte
+        "dollar falls",
+        "dollar weakens",
+        "dollar drops",
+        "dxy falls",
+        "dollar index falls",
+        "weak dollar",
+        "dollar lower",
+        "dollar decline",
+        "usd weakness",
+        # Fed dovish
+        "rate cut",
+        "rate cuts",
+        "fed cut",
+        "dovish",
+        "pause rate",
+        "rate pause",
+        "fed holds",
+        "lower rates",
+        "easy monetary",
+        "quantitative easing",
+        "qe",
+        "fed pivot",
+        "rate reduction",
+        "accommodative",
+        # Inflatie / safe haven
+        "inflation rises",
+        "inflation higher",
+        "cpi beats",
+        "pce higher",
+        "real yields fall",
+        "negative real rates",
+        "inflation fears",
+        "stagflation",
+        # Geopolitiek
+        "war",
+        "conflict",
+        "geopolit",
+        "crisis",
+        "safe haven",
+        "flight to safety",
+        "uncertainty",
+        "tension",
+        "sanctions",
+        "middle east",
+        "ukraine",
+        "russia",
+        "recession fears",
+        "recession risk",
+        "slowdown",
+        "bank crisis",
+        "banking stress",
+        "debt ceiling",
+        "default risk",
+        "economic weakness",
+        # Centrale bank goud
+        "central bank buying",
+        "gold reserves",
+        "central bank gold",
+        "gold purchases",
+        "de-dollarization",
+        "brics gold",
+        "gold demand",
+        "etf inflows",
+        # Markt
+        "gold rally",
+        "gold gains",
+        "gold rises",
+        "gold surge",
+        "gold jumps",
+        "gold breakout",
+        "gold record",
+        "gold high",
+        "gold bull",
+    }
+)
 
-_BEARISH_GOLD = frozenset({
-    # USD sterkte
-    "dollar rises", "dollar strengthens", "dollar gains", "dxy rises",
-    "dollar higher", "strong dollar", "dollar rally", "usd strength",
-    # Fed hawkish
-    "rate hike", "rate hikes", "hawkish", "fed hike", "tightening",
-    "higher rates", "rates higher", "fed raises", "quantitative tightening", "qt",
-    "restrictive", "aggressive fed",
-    # Real yields stijgen
-    "inflation falls", "inflation lower", "cpi miss", "deflation",
-    "real yields rise", "yields higher", "10-year rises", "treasury yields",
-    "bond yields", "yield surge",
-    # Risk-on
-    "risk on", "equities rise", "stocks rally", "s&p gains", "nasdaq gains",
-    "economic growth", "strong gdp", "strong jobs", "nfp beats",
-    "strong economy", "growth outlook improves", "bull market",
-    # Goud negatief
-    "gold falls", "gold drops", "gold plunges", "gold declines",
-    "gold selloff", "gold sell off", "gold outflows", "gold pressure",
-    "gold weakness", "gold lower", "gold bear", "central bank selling",
-})
+_BEARISH_GOLD = frozenset(
+    {
+        # USD sterkte
+        "dollar rises",
+        "dollar strengthens",
+        "dollar gains",
+        "dxy rises",
+        "dollar higher",
+        "strong dollar",
+        "dollar rally",
+        "usd strength",
+        # Fed hawkish
+        "rate hike",
+        "rate hikes",
+        "hawkish",
+        "fed hike",
+        "tightening",
+        "higher rates",
+        "rates higher",
+        "fed raises",
+        "quantitative tightening",
+        "qt",
+        "restrictive",
+        "aggressive fed",
+        # Real yields stijgen
+        "inflation falls",
+        "inflation lower",
+        "cpi miss",
+        "deflation",
+        "real yields rise",
+        "yields higher",
+        "10-year rises",
+        "treasury yields",
+        "bond yields",
+        "yield surge",
+        # Risk-on
+        "risk on",
+        "equities rise",
+        "stocks rally",
+        "s&p gains",
+        "nasdaq gains",
+        "economic growth",
+        "strong gdp",
+        "strong jobs",
+        "nfp beats",
+        "strong economy",
+        "growth outlook improves",
+        "bull market",
+        # Goud negatief
+        "gold falls",
+        "gold drops",
+        "gold plunges",
+        "gold declines",
+        "gold selloff",
+        "gold sell off",
+        "gold outflows",
+        "gold pressure",
+        "gold weakness",
+        "gold lower",
+        "gold bear",
+        "central bank selling",
+    }
+)
 
 # Macro event keywords — hoog impact → risk reductie
-_MACRO_EVENTS = frozenset({
-    "fomc", "federal reserve meeting", "fed decision", "interest rate decision",
-    "nfp", "non-farm payroll", "jobs report", "cpi report", "consumer price index",
-    "pce inflation", "gdp report", "ecb meeting", "boe meeting",
-    "bank of england", "powell speech", "fed minutes",
-})
+_MACRO_EVENTS = frozenset(
+    {
+        "fomc",
+        "federal reserve meeting",
+        "fed decision",
+        "interest rate decision",
+        "nfp",
+        "non-farm payroll",
+        "jobs report",
+        "cpi report",
+        "consumer price index",
+        "pce inflation",
+        "gdp report",
+        "ecb meeting",
+        "boe meeting",
+        "bank of england",
+        "powell speech",
+        "fed minutes",
+    }
+)
 
 # Super high impact — blokkeer trading
-_SUPER_HIGH_IMPACT = frozenset({
-    "flash crash", "market halt", "circuit breaker", "emergency meeting",
-    "nuclear", "market closure", "exchange halt",
-})
+_SUPER_HIGH_IMPACT = frozenset(
+    {
+        "flash crash",
+        "market halt",
+        "circuit breaker",
+        "emergency meeting",
+        "nuclear",
+        "market closure",
+        "exchange halt",
+    }
+)
 
 
 # ─────────────────────────────────────────────────────────────────
 # DATA CLASSES
 # ─────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class EnhancedSentiment:
-    score: float                          # -1.0 tot +1.0
-    label: str                            # sterk_bullish .. sterk_bearish
-    confidence: float                     # 0.0 tot 1.0
+    score: float  # -1.0 tot +1.0
+    label: str  # sterk_bullish .. sterk_bearish
+    confidence: float  # 0.0 tot 1.0
     headline_count: int
     bullish_count: int
     bearish_count: int
     sources: list[str] = field(default_factory=list)
-    rolling_avg: float = 0.0              # Gemiddelde van laatste 3 fetches
-    rolling_volatility: float = 0.0       # Standaardafwijking rolling window
+    rolling_avg: float = 0.0  # Gemiddelde van laatste 3 fetches
+    rolling_volatility: float = 0.0  # Standaardafwijking rolling window
     macro_event_detected: bool = False
-    macro_event_level: str = "LOW"        # LOW | MEDIUM | HIGH | CRITICAL
+    macro_event_level: str = "LOW"  # LOW | MEDIUM | HIGH | CRITICAL
     macro_event_keywords: list[str] = field(default_factory=list)
-    risk_modifier: float = 1.0            # Multiplier voor position sizing
-    fetched_at: Optional[datetime] = None
+    risk_modifier: float = 1.0  # Multiplier voor position sizing
+    fetched_at: datetime | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -188,7 +307,7 @@ class SentimentEngine:
         self._cache_minutes = cache_minutes
         self._rolling_window = rolling_window
         self._symbols = symbols or ["GC=F", "GLD", "XAUUSD=X"]
-        self._cached: Optional[EnhancedSentiment] = None
+        self._cached: EnhancedSentiment | None = None
         self._cached_at: float = 0.0
         self._history: deque[float] = deque(maxlen=rolling_window)
 
@@ -206,8 +325,11 @@ class SentimentEngine:
 
         logger.info(
             "Sentiment bijgewerkt: %s (score=%.2f, conf=%.0f%%, %d headlines, macro=%s)",
-            result.label, result.score, result.confidence * 100,
-            result.headline_count, result.macro_event_level,
+            result.label,
+            result.score,
+            result.confidence * 100,
+            result.headline_count,
+            result.macro_event_level,
         )
         return result
 
@@ -404,26 +526,39 @@ class SentimentEngine:
 
     @staticmethod
     def _score_to_label(score: float) -> str:
-        if score >= 0.5:    return "sterk_bullish"
-        if score >= 0.25:   return "bullish"
-        if score <= -0.5:   return "sterk_bearish"
-        if score <= -0.25:  return "bearish"
+        if score >= 0.5:
+            return "sterk_bullish"
+        if score >= 0.25:
+            return "bullish"
+        if score <= -0.5:
+            return "sterk_bearish"
+        if score <= -0.25:
+            return "bearish"
         return "neutral"
 
     @staticmethod
     def _calc_risk_modifier(score: float, macro_level: str) -> float:
-        if macro_level == "CRITICAL":   return 0.25
-        if macro_level == "HIGH":       return 0.50
-        if macro_level == "MEDIUM":     return 0.75
-        if abs(score) >= 0.5:           return 1.20
-        if abs(score) >= 0.25:          return 1.10
+        if macro_level == "CRITICAL":
+            return 0.25
+        if macro_level == "HIGH":
+            return 0.50
+        if macro_level == "MEDIUM":
+            return 0.75
+        if abs(score) >= 0.5:
+            return 1.20
+        if abs(score) >= 0.25:
+            return 1.10
         return 1.0
 
     @staticmethod
     def _neutral() -> EnhancedSentiment:
         return EnhancedSentiment(
-            score=0.0, label="neutral", confidence=0.0,
-            headline_count=0, bullish_count=0, bearish_count=0,
+            score=0.0,
+            label="neutral",
+            confidence=0.0,
+            headline_count=0,
+            bullish_count=0,
+            bearish_count=0,
             fetched_at=datetime.now(timezone.utc),
         )
 

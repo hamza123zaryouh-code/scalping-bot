@@ -80,9 +80,10 @@ def test_metrics_returns_report(api_client):
 
 
 def test_metrics_handles_empty_dataset(api_client):
-    from backend.main import create_app
-    from backend.api.deps import get_current_user
     from fastapi.testclient import TestClient
+
+    from backend.api.deps import get_current_user
+    from backend.main import create_app
 
     app = create_app()
     app.dependency_overrides[get_current_user] = lambda: {"sub": "test_user", "role": "admin"}
@@ -98,9 +99,10 @@ def test_metrics_handles_empty_dataset(api_client):
 
 
 def test_metrics_returns_503_on_database_failure(api_client):
-    from backend.main import create_app
-    from backend.api.deps import get_current_user
     from fastapi.testclient import TestClient
+
+    from backend.api.deps import get_current_user
+    from backend.main import create_app
 
     app = create_app()
     app.dependency_overrides[get_current_user] = lambda: {"sub": "test_user", "role": "admin"}
@@ -117,9 +119,10 @@ def test_metrics_returns_503_on_database_failure(api_client):
 
 
 def test_sentiment_rejects_malformed_state(api_client):
-    from backend.main import create_app
-    from backend.api.deps import get_current_user
     from fastapi.testclient import TestClient
+
+    from backend.api.deps import get_current_user
+    from backend.main import create_app
 
     app = create_app()
     app.dependency_overrides[get_current_user] = lambda: {"sub": "test_user", "role": "admin"}

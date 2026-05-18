@@ -11,12 +11,10 @@ Eisen:
   - Zelfde candles → zelfde risk percentage
   - Geen toestand lekt tussen runs (stateless engine)
 """
+
 from __future__ import annotations
 
 import math
-from copy import deepcopy
-from datetime import datetime, timedelta
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -24,10 +22,10 @@ import pytest
 
 from core.strategy_engine import DEFAULT_CFG, SignalResult, StrategyEngine, get_engine
 
-
 # ─────────────────────────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────────────────────────
+
 
 def _make_gold_ohlcv(
     n: int = 500,
@@ -49,7 +47,7 @@ def _make_gold_ohlcv(
     )
 
 
-def _signal_summary(signal: Optional[SignalResult]) -> dict:
+def _signal_summary(signal: SignalResult | None) -> dict:
     """Compact, vergelijkbare weergave van een SignalResult."""
     if signal is None:
         return {"signal": None}
@@ -66,13 +64,12 @@ def _signal_summary(signal: Optional[SignalResult]) -> dict:
     }
 
 
-def _assert_signals_equal(a: Optional[SignalResult], b: Optional[SignalResult], label: str = "") -> None:
+def _assert_signals_equal(a: SignalResult | None, b: SignalResult | None, label: str = "") -> None:
     """Controleert dat twee SignalResults identiek zijn (of beide None)."""
     if a is None and b is None:
         return
     assert a is not None and b is not None, (
-        f"{label}: Een run geeft None, de andere niet — "
-        f"Run A: {_signal_summary(a)}, Run B: {_signal_summary(b)}"
+        f"{label}: Een run geeft None, de andere niet — Run A: {_signal_summary(a)}, Run B: {_signal_summary(b)}"
     )
     assert a.signal_type == b.signal_type, f"{label}: signal_type verschil: {a.signal_type!r} vs {b.signal_type!r}"
     assert a.direction == b.direction, f"{label}: direction verschil: {a.direction!r} vs {b.direction!r}"
@@ -96,8 +93,7 @@ def _assert_indicators_equal(fa: pd.DataFrame, fb: pd.DataFrame, tol: float = 1e
     """Controleert dat twee verrijkte DataFrames identieke indicatorwaarden hebben."""
     common_cols = set(fa.columns) & set(fb.columns)
     numeric_cols = [
-        c for c in common_cols
-        if pd.api.types.is_numeric_dtype(fa[c]) and not pd.api.types.is_bool_dtype(fa[c])
+        c for c in common_cols if pd.api.types.is_numeric_dtype(fa[c]) and not pd.api.types.is_bool_dtype(fa[c])
     ]
 
     for col in numeric_cols:
@@ -108,6 +104,7 @@ def _assert_indicators_equal(fa: pd.DataFrame, fb: pd.DataFrame, tol: float = 1e
 # ─────────────────────────────────────────────────────────────────
 # TEST 1: DETERMINISME — dezelfde input → zelfde output
 # ─────────────────────────────────────────────────────────────────
+
 
 class TestDeterminism:
     """Engine is puur stateless: dezelfde input geeft altijd dezelfde output."""
@@ -158,13 +155,14 @@ class TestDeterminism:
         sig_a = engine.generate_signal(feat_a)
         sig_b = engine.generate_signal(feat_b)
         # We kunnen niet garanderen dat ze verschillen, maar de engine moet in ieder geval draaien
-        assert (sig_a is None or isinstance(sig_a, SignalResult))
-        assert (sig_b is None or isinstance(sig_b, SignalResult))
+        assert sig_a is None or isinstance(sig_a, SignalResult)
+        assert sig_b is None or isinstance(sig_b, SignalResult)
 
 
 # ─────────────────────────────────────────────────────────────────
 # TEST 2: LIVE ↔ BACKTEST CONSISTENCY WALK-FORWARD
 # ─────────────────────────────────────────────────────────────────
+
 
 class TestLiveVsBacktestConsistency:
     """
@@ -186,19 +184,21 @@ class TestLiveVsBacktestConsistency:
         """Simuleert live trading: engine verwerkt bar voor bar na warmup."""
         signals = []
         for i in range(warmup, len(full_df)):
-            window = full_df.iloc[:i + 1]
+            window = full_df.iloc[: i + 1]
             try:
                 features = engine.prepare_features(window)
                 if features.empty:
                     signals.append({"bar": i, "timestamp": str(full_df.index[i]), "signal": None})
                     continue
                 sig = engine.generate_signal(features, cfg=cfg)
-                signals.append({
-                    "bar": i,
-                    "timestamp": str(full_df.index[i]),
-                    "signal": _signal_summary(sig),
-                    "raw": sig,
-                })
+                signals.append(
+                    {
+                        "bar": i,
+                        "timestamp": str(full_df.index[i]),
+                        "signal": _signal_summary(sig),
+                        "raw": sig,
+                    }
+                )
             except Exception as exc:
                 signals.append({"bar": i, "timestamp": str(full_df.index[i]), "signal": "ERROR", "error": str(exc)})
         return signals
@@ -217,17 +217,19 @@ class TestLiveVsBacktestConsistency:
             if full_df.index[i] not in features_full.index:
                 signals.append({"bar": i, "timestamp": str(full_df.index[i]), "signal": None})
                 continue
-            window_feat = features_full.loc[:full_df.index[i]]
+            window_feat = features_full.loc[: full_df.index[i]]
             if len(window_feat) < 4:
                 signals.append({"bar": i, "timestamp": str(full_df.index[i]), "signal": None})
                 continue
             sig = engine.generate_signal(window_feat, cfg=cfg)
-            signals.append({
-                "bar": i,
-                "timestamp": str(full_df.index[i]),
-                "signal": _signal_summary(sig),
-                "raw": sig,
-            })
+            signals.append(
+                {
+                    "bar": i,
+                    "timestamp": str(full_df.index[i]),
+                    "signal": _signal_summary(sig),
+                    "raw": sig,
+                }
+            )
         return signals
 
     @pytest.mark.parametrize("seed", [42, 77, 123])
@@ -255,12 +257,14 @@ class TestLiveVsBacktestConsistency:
 
             if live_sig != bt_sig:
                 mismatches += 1
-                mismatch_details.append({
-                    "bar": live["bar"],
-                    "timestamp": live["timestamp"],
-                    "live": live_sig,
-                    "backtest": bt_sig,
-                })
+                mismatch_details.append(
+                    {
+                        "bar": live["bar"],
+                        "timestamp": live["timestamp"],
+                        "live": live_sig,
+                        "backtest": bt_sig,
+                    }
+                )
 
         match_rate = (total - mismatches) / total
         assert match_rate >= 0.99, (
@@ -289,7 +293,8 @@ class TestLiveVsBacktestConsistency:
         # een 300-bar en 350-bar dataset geven verschillende EWM initialisatie voor H4 bars.
         # H1 indicators zijn deterministisch en moeten exact gelijk zijn.
         h1_numeric_cols = [
-            c for c in feat_subset.columns
+            c
+            for c in feat_subset.columns
             if pd.api.types.is_numeric_dtype(feat_subset[c])
             and not pd.api.types.is_bool_dtype(feat_subset[c])
             and not c.startswith(("h4_", "d1_"))
@@ -298,9 +303,7 @@ class TestLiveVsBacktestConsistency:
             a_vals = feat_subset.loc[common_idx, col]
             b_vals = feat_full.loc[common_idx, col]
             max_diff = (a_vals - b_vals).abs().max()
-            assert max_diff < 1e-8, (
-                f"H1 indicator '{col}' heeft parity mismatch: max diff = {max_diff:.2e}"
-            )
+            assert max_diff < 1e-8, f"H1 indicator '{col}' heeft parity mismatch: max diff = {max_diff:.2e}"
 
     def test_sl_tp_consistency(self):
         """SL/TP prijsniveaus zijn exact identiek tussen twee identieke runs."""
@@ -342,6 +345,7 @@ class TestLiveVsBacktestConsistency:
 # ─────────────────────────────────────────────────────────────────
 # TEST 3: INDICATOR CORRECTHEID
 # ─────────────────────────────────────────────────────────────────
+
 
 class TestIndicatorCorrectness:
     """Valideer dat elke indicator de juiste wiskundige definitie volgt."""
@@ -425,6 +429,7 @@ class TestIndicatorCorrectness:
 # TEST 4: SIGNAL KWALITEIT VALIDATIE
 # ─────────────────────────────────────────────────────────────────
 
+
 class TestSignalQuality:
     """Valideer dat signalen aan basisregels voldoen."""
 
@@ -484,6 +489,7 @@ class TestSignalQuality:
 
     def test_priority_matches_signal_type(self):
         from core.strategy_engine import SIGNAL_PRIORITY
+
         signals = self._get_all_signals()
         if not signals:
             pytest.skip("Geen signalen gegenereerd")
@@ -513,6 +519,7 @@ class TestSignalQuality:
 # TEST 5: BACKTEST SIMULATION REPLAY
 # ─────────────────────────────────────────────────────────────────
 
+
 class TestBacktestReplay:
     """Deterministisch replay systeem: backtest output is reproduceerbaar."""
 
@@ -529,25 +536,25 @@ class TestBacktestReplay:
             return {"trades": [], "signals": [], "final_capital": capital}
 
         signals = []
-        trades = []
-        open_trade = None
         cap = capital
 
         for i in range(4, len(features)):
-            window = features.iloc[:i + 1]
+            window = features.iloc[: i + 1]
             sig = engine.generate_signal(window, cfg=cfg)
             if sig is not None:
-                signals.append({
-                    "bar": i,
-                    "timestamp": str(features.index[i]),
-                    "type": sig.signal_type,
-                    "direction": sig.direction,
-                    "entry": sig.entry_price,
-                    "sl": sig.stop_loss,
-                    "tp1": sig.take_profit_1,
-                    "tp3": sig.take_profit_3,
-                    "risk_pct": sig.risk_pct,
-                })
+                signals.append(
+                    {
+                        "bar": i,
+                        "timestamp": str(features.index[i]),
+                        "type": sig.signal_type,
+                        "direction": sig.direction,
+                        "entry": sig.entry_price,
+                        "sl": sig.stop_loss,
+                        "tp1": sig.take_profit_1,
+                        "tp3": sig.take_profit_3,
+                        "risk_pct": sig.risk_pct,
+                    }
+                )
 
         return {"signals": signals, "final_capital": cap}
 
@@ -576,11 +583,14 @@ class TestBacktestReplay:
         # Final capital moet redelijk zijn (niet gecrasht)
         assert result["final_capital"] >= 0.0, "Capital is negatief geworden"
 
-    @pytest.mark.parametrize("cfg_key,cfg_val", [
-        ("risk_a", 0.008),
-        ("sl_atr", 2.0),
-        ("tp1_r", 2.0),
-    ])
+    @pytest.mark.parametrize(
+        "cfg_key,cfg_val",
+        [
+            ("risk_a", 0.008),
+            ("sl_atr", 2.0),
+            ("tp1_r", 2.0),
+        ],
+    )
     def test_cfg_sensitivity(self, cfg_key, cfg_val):
         """Config wijzigingen beïnvloeden signalen reproduceerbaar."""
         df = _make_gold_ohlcv(300, seed=33)
@@ -588,7 +598,7 @@ class TestBacktestReplay:
         cfg_mod = {**DEFAULT_CFG, cfg_key: cfg_val}
 
         result_base = self._run_full_backtest(df, cfg_base)
-        result_mod = self._run_full_backtest(df, cfg_mod)
+        self._run_full_backtest(df, cfg_mod)
 
         # Beide moeten deterministisch zijn
         result_base2 = self._run_full_backtest(df, cfg_base)

@@ -1,9 +1,9 @@
 """Telegram control service backed by FastAPI endpoints and shared runtime state."""
+
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -13,10 +13,10 @@ import pandas as pd
 from autonomous_xauusd.memory_layer import MemoryLayer
 from autonomous_xauusd.settings import load_settings
 from backend.api.schemas.backtest import BacktestRequest
+from backend.core.config import get_settings
 from backend.services.backtest_service import BacktestService
 from backend.services.risk_service import RiskService
 from backend.services.signal_service import SignalService
-from backend.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +79,7 @@ class TelegramService:
         ]
         if orphaned.get("count", 0) > 0:
             summary_lines.append(
-                f"WAARSCHUWING: {orphaned['count']} orphaned broker positie(s) niet in DB "
-                f"(gedetecteerd bij startup)"
+                f"WAARSCHUWING: {orphaned['count']} orphaned broker positie(s) niet in DB (gedetecteerd bij startup)"
             )
         summary = "\n".join(summary_lines)
         return {
@@ -219,7 +218,9 @@ class TelegramService:
         daily_pnl = self._period_pnl(history, "D")
         weekly_pnl = self._period_pnl(history, "W")
         monthly_pnl = self._period_pnl(history, "M")
-        drawdown = max(self._settings.starting_capital - float(state.get("equity", self._settings.starting_capital)), 0.0)
+        drawdown = max(
+            self._settings.starting_capital - float(state.get("equity", self._settings.starting_capital)), 0.0
+        )
         drawdown_pct = (drawdown / self._settings.starting_capital * 100) if self._settings.starting_capital else 0.0
         loss_streak = self._loss_streak(history)
 
@@ -231,8 +232,7 @@ class TelegramService:
                 {"daily_pnl": round(daily_pnl, 2), **ftmo},
             ),
             "weekly": (
-                f"Weekly Risk Status\nPnL deze week: {self._money(weekly_pnl)}\n"
-                f"Actieve verliesstreak: {loss_streak}",
+                f"Weekly Risk Status\nPnL deze week: {self._money(weekly_pnl)}\nActieve verliesstreak: {loss_streak}",
                 {"weekly_pnl": round(weekly_pnl, 2), "loss_streak": loss_streak},
             ),
             "monthly_target": (
@@ -283,7 +283,11 @@ class TelegramService:
             "today": (
                 f"Signals Today\nAantal: {len(today_signals)}\n"
                 f"Enabled: {'YES' if control.get('signals_enabled', True) else 'NO'}",
-                {"count": len(today_signals), "signals": today_signals, "enabled": control.get("signals_enabled", True)},
+                {
+                    "count": len(today_signals),
+                    "signals": today_signals,
+                    "enabled": control.get("signals_enabled", True),
+                },
             ),
         }
         if section not in mapping:
@@ -351,9 +355,19 @@ class TelegramService:
         summary = "\n".join(
             [
                 "Compare Baseline vs Latest Backtest",
-                f"Baseline: {baseline.get('variant', 'unknown')} | PF {float(baseline.get('pf', 0.0)):.2f} | DD {float(baseline.get('max_dd', 0.0)):.2f}%",
-                f"Latest: PF {float(latest.get('profit_factor', 0.0)):.2f} | DD {float(latest.get('max_drawdown_pct', 0.0)):.2f}%",
-                f"PnL/Return: Baseline {self._money(baseline.get('pnl_eur', 0.0))} | Latest {float(latest.get('total_return_pct', 0.0)):.2f}%",
+                (
+                    f"Baseline: {baseline.get('variant', 'unknown')} | "
+                    f"PF {float(baseline.get('pf', 0.0)):.2f} | "
+                    f"DD {float(baseline.get('max_dd', 0.0)):.2f}%"
+                ),
+                (
+                    f"Latest: PF {float(latest.get('profit_factor', 0.0)):.2f} | "
+                    f"DD {float(latest.get('max_drawdown_pct', 0.0)):.2f}%"
+                ),
+                (
+                    f"PnL/Return: Baseline {self._money(baseline.get('pnl_eur', 0.0))} | "
+                    f"Latest {float(latest.get('total_return_pct', 0.0)):.2f}%"
+                ),
             ]
         )
         return {

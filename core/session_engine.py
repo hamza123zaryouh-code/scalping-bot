@@ -22,9 +22,8 @@ DST handling:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Optional
 
 
 class SessionType(str, Enum):
@@ -48,7 +47,7 @@ class SessionInfo:
     session: SessionType
     quality: SessionQuality
     is_killzone: bool
-    killzone_name: Optional[str]
+    killzone_name: str | None
     is_valid_for_trading: bool
     allows_all_signals: bool   # False = alleen A/B kwaliteit
     session_start_utc: int
@@ -108,7 +107,7 @@ class SessionEngine:
     MONDAY_BLOCKED_BEFORE = 7    # Maandag: geen trading voor 07:00 UTC
     FRIDAY_BLOCKED_AFTER = 17    # Vrijdag: geen trading na 17:00 UTC
 
-    def get_session_info(self, dt: Optional[datetime] = None) -> SessionInfo:
+    def get_session_info(self, dt: datetime | None = None) -> SessionInfo:
         """
         Geeft volledige sessie-informatie voor een gegeven UTC datetime.
         Gebruikt datetime.now(timezone.utc) als dt=None.
@@ -206,14 +205,14 @@ class SessionEngine:
             valid=False,
         )
 
-    def is_valid_trading_time(self, dt: Optional[datetime] = None) -> bool:
+    def is_valid_trading_time(self, dt: datetime | None = None) -> bool:
         return self.get_session_info(dt).is_valid_for_trading
 
-    def get_session_name(self, dt: Optional[datetime] = None) -> str:
+    def get_session_name(self, dt: datetime | None = None) -> str:
         info = self.get_session_info(dt)
         return info.session.value
 
-    def get_volatility_factor(self, dt: Optional[datetime] = None) -> float:
+    def get_volatility_factor(self, dt: datetime | None = None) -> float:
         """
         Geeft een volatiliteitsfactor per sessie.
         Gebruik voor positie-sizing aanpassing.
@@ -230,7 +229,7 @@ class SessionEngine:
         base = factors.get(info.session, 0.0)
         return base * 1.2 if info.is_killzone else base
 
-    def get_next_trading_session(self, dt: Optional[datetime] = None) -> datetime:
+    def get_next_trading_session(self, dt: datetime | None = None) -> datetime:
         """Geeft de start van de volgende trading sessie terug."""
         if dt is None:
             dt = datetime.now(timezone.utc)
@@ -243,7 +242,7 @@ class SessionEngine:
 
         return check
 
-    def get_session_analytics(self, dt: Optional[datetime] = None) -> dict:
+    def get_session_analytics(self, dt: datetime | None = None) -> dict:
         """Sessie analytics voor dashboard."""
         info = self.get_session_info(dt)
         next_session = self.get_next_trading_session(dt) if not info.is_valid_for_trading else None
@@ -257,7 +256,7 @@ class SessionEngine:
     # INTERNE HELPERS
     # ─────────────────────────────────────────────────────────────
 
-    def _get_killzone(self, hour: int, minute: int) -> Optional[str]:
+    def _get_killzone(self, hour: int, minute: int) -> str | None:
         for name, (sh, sm, eh, em) in self.KILLZONES.items():
             start_min = sh * 60 + sm
             end_min = eh * 60 + em
@@ -286,7 +285,7 @@ class SessionEngine:
         description: str,
         valid: bool = False,
         all_signals: bool = False,
-        killzone: Optional[str] = None,
+        killzone: str | None = None,
     ) -> SessionInfo:
         session_ranges = {
             SessionType.LONDON: (self.LONDON_START, self.LONDON_END),

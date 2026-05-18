@@ -1,10 +1,10 @@
 """FastAPI application entry point."""
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from contextlib import asynccontextmanager
-import json
 from json import JSONDecodeError
 from pathlib import Path
 
@@ -197,7 +197,7 @@ def create_app() -> FastAPI:
             )
             return
 
-        await ws_manager.connect(
+        connection = await ws_manager.connect(
             websocket,
             user_id=user_id,
             role=str(user.get("role", "viewer")),
@@ -206,6 +206,9 @@ def create_app() -> FastAPI:
             websocket,
             {"type": "connection.accepted", "payload": {"user": user_id}},
         )
+        stream_svc = get_stream_service()
+        for message in await stream_svc.snapshot_messages(connection.subscriptions):
+            await ws_manager.send_json(websocket, message)
 
         try:
             while True:
@@ -223,14 +226,16 @@ def create_app() -> FastAPI:
 
                 if message_type == "subscribe":
                     channels = message.get("channels", [])
-                    ws_manager.update_subscriptions(websocket, channels)
+                    effective_channels = ws_manager.update_subscriptions(websocket, channels)
                     await ws_manager.send_json(
                         websocket,
                         {
                             "type": "subscription.updated",
-                            "payload": {"channels": channels},
+                            "payload": {"channels": effective_channels},
                         },
                     )
+                    for snapshot in await stream_svc.snapshot_messages(effective_channels):
+                        await ws_manager.send_json(websocket, snapshot)
                     continue
 
                 await ws_manager.send_json(

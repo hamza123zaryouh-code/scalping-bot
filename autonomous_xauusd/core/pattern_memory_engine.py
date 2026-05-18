@@ -18,6 +18,7 @@ Features:
   - Automatic pruning of stale patterns (> 6 months without a trade)
   - Thread-safe for concurrent main loop + API access
 """
+
 from __future__ import annotations
 
 import json
@@ -41,38 +42,58 @@ _STALE_DAYS = 180
 
 
 def _rsi_bucket(rsi: float) -> str:
-    if rsi < 30:   return "oversold"
-    if rsi < 45:   return "bearish_zone"
-    if rsi < 55:   return "neutral"
-    if rsi < 70:   return "bullish_zone"
+    if rsi < 30:
+        return "oversold"
+    if rsi < 45:
+        return "bearish_zone"
+    if rsi < 55:
+        return "neutral"
+    if rsi < 70:
+        return "bullish_zone"
     return "overbought"
 
 
 def _regime_key(h4_regime: str | None) -> str:
     r = (h4_regime or "").lower()
-    if "strong_bull" in r or "bullish_strong" in r: return "strong_bull"
-    if "bull" in r:  return "bull"
-    if "strong_bear" in r or "bearish_strong" in r: return "strong_bear"
-    if "bear" in r:  return "bear"
+    if "strong_bull" in r or "bullish_strong" in r:
+        return "strong_bull"
+    if "bull" in r:
+        return "bull"
+    if "strong_bear" in r or "bearish_strong" in r:
+        return "strong_bear"
+    if "bear" in r:
+        return "bear"
     return "ranging"
 
 
 def _d1_key(d1_trend: str | None) -> str:
     t = (d1_trend or "").lower()
-    if "bull" in t:  return "bull"
-    if "bear" in t:  return "bear"
+    if "bull" in t:
+        return "bull"
+    if "bear" in t:
+        return "bear"
     return "neutral"
 
 
 class PatternRecord:
     __slots__ = (
-        "key", "signal_type", "direction", "h4_regime", "d1_trend",
-        "rsi_bucket", "session", "trades", "wins", "total_pnl",
-        "reward_risk_sum", "last_trade_at",
+        "key",
+        "signal_type",
+        "direction",
+        "h4_regime",
+        "d1_trend",
+        "rsi_bucket",
+        "session",
+        "trades",
+        "wins",
+        "total_pnl",
+        "reward_risk_sum",
+        "last_trade_at",
     )
 
-    def __init__(self, key: str, signal_type: str, direction: str,
-                 h4_regime: str, d1_trend: str, rsi_bucket: str, session: str) -> None:
+    def __init__(
+        self, key: str, signal_type: str, direction: str, h4_regime: str, d1_trend: str, rsi_bucket: str, session: str
+    ) -> None:
         self.key = key
         self.signal_type = signal_type
         self.direction = direction
@@ -152,7 +173,7 @@ class PatternRecord:
         }
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "PatternRecord":
+    def from_dict(cls, d: dict[str, Any]) -> PatternRecord:
         rec = cls(
             key=d["key"],
             signal_type=d.get("signal_type", "unknown"),
@@ -274,10 +295,7 @@ class PatternMemoryEngine:
 
     def get_top_patterns(self, n: int = 10, min_trades: int = 3) -> list[dict[str, Any]]:
         with self._lock:
-            eligible = [
-                rec for rec in self._patterns.values()
-                if rec.trades >= min_trades and not rec.is_blocked()
-            ]
+            eligible = [rec for rec in self._patterns.values() if rec.trades >= min_trades and not rec.is_blocked()]
         eligible.sort(key=lambda r: r.quality_score, reverse=True)
         return [rec.to_dict() for rec in eligible[:n]]
 

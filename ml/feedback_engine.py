@@ -16,6 +16,7 @@ Compatibel met:
   - autonomous_xauusd/brain_layer.py (model training)
   - core/strategy_engine.py (feature names)
 """
+
 from __future__ import annotations
 
 import logging
@@ -23,9 +24,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
 
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -33,27 +32,46 @@ logger = logging.getLogger(__name__)
 MIN_TRAINING_SAMPLES = 20
 MIN_CONFIDENCE_THRESHOLD = 0.45
 MODEL_FEATURES = [
-    "rsi14", "adx14", "macd_hist", "h4_adx", "h4_regime_score",
-    "d1_bull", "dist21", "atr14", "volatility_ratio",
-    "hour_of_day", "day_of_week", "session_score",
-    "signal_priority", "sentiment_score",
+    "rsi14",
+    "adx14",
+    "macd_hist",
+    "h4_adx",
+    "h4_regime_score",
+    "d1_bull",
+    "dist21",
+    "atr14",
+    "volatility_ratio",
+    "hour_of_day",
+    "day_of_week",
+    "session_score",
+    "signal_priority",
+    "sentiment_score",
 ]
 
 SIGNAL_PRIORITY_MAP = {
-    "A_EMACROSS": 6, "B_MACDCROSS": 5, "E_BOS": 4,
-    "C_MOMENTUM": 3, "F_MSS": 2, "D_PULLBACK": 1,
+    "A_EMACROSS": 6,
+    "B_MACDCROSS": 5,
+    "E_BOS": 4,
+    "C_MOMENTUM": 3,
+    "F_MSS": 2,
+    "D_PULLBACK": 1,
 }
 
 H4_REGIME_SCORE = {
-    "STERK_BULL": 3, "BULL": 2, "ZWAK_BULL": 1,
+    "STERK_BULL": 3,
+    "BULL": 2,
+    "ZWAK_BULL": 1,
     "CHOPPY": 0,
-    "ZWAK_BEAR": -1, "BEAR": -2, "STERK_BEAR": -3,
+    "ZWAK_BEAR": -1,
+    "BEAR": -2,
+    "STERK_BEAR": -3,
 }
 
 
 @dataclass
 class TradeFeatureRecord:
     """Feature vector van één gesloten trade — input voor het ML model."""
+
     broker_ticket: str
     signal_type: str
     direction: str
@@ -73,7 +91,7 @@ class TradeFeatureRecord:
     rr_ratio: float
     market_regime: str
     holding_minutes: float
-    source: str = "live"        # "live" | "backtest" | "paper"
+    source: str = "live"  # "live" | "backtest" | "paper"
     recorded_at: datetime = field(default_factory=datetime.utcnow)
 
     @property
@@ -91,10 +109,13 @@ class TradeFeatureRecord:
     @property
     def session_score(self) -> float:
         h = self.hour_of_day
-        if 7 <= h < 12:  return 1.0   # London open — premium
-        if 13 <= h <= 17: return 1.0  # NY open — premium
-        if h == 12:       return 0.5  # Overlap — standard
-        return 0.0                    # buiten sessie
+        if 7 <= h < 12:
+            return 1.0  # London open — premium
+        if 13 <= h <= 17:
+            return 1.0  # NY open — premium
+        if h == 12:
+            return 0.5  # Overlap — standard
+        return 0.0  # buiten sessie
 
     @property
     def signal_priority(self) -> float:
@@ -136,6 +157,7 @@ class TradeFeatureRecord:
 @dataclass
 class ModelMetrics:
     """Performance metrics van het feedback model."""
+
     accuracy: float
     precision: float
     recall: float
@@ -172,11 +194,11 @@ class FeedbackEngine:
         confidence = engine.predict_confidence(features)
     """
 
-    def __init__(self, artifact_path: Optional[Path] = None):
+    def __init__(self, artifact_path: Path | None = None):
         self._records: list[TradeFeatureRecord] = []
         self._model_gb = None
         self._model_rf = None
-        self._metrics: Optional[ModelMetrics] = None
+        self._metrics: ModelMetrics | None = None
         self._artifact_path = artifact_path or Path("artifacts/feedback_model.joblib")
         self._artifact_path.parent.mkdir(parents=True, exist_ok=True)
         self._load_model()
@@ -190,7 +212,10 @@ class FeedbackEngine:
         self._records.append(record)
         logger.debug(
             "Trade geregistreerd: %s %s PnL=%.2f Winner=%s",
-            record.signal_type, record.direction, record.pnl, record.is_winner,
+            record.signal_type,
+            record.direction,
+            record.pnl,
+            record.is_winner,
         )
 
     def load_from_memory_layer(self, memory_layer) -> int:
@@ -222,49 +247,62 @@ class FeedbackEngine:
             logger.warning("FeedbackEngine: memory_layer laden mislukt: %s", exc)
             return 0
 
-    def train(self) -> Optional[ModelMetrics]:
+    def train(self) -> ModelMetrics | None:
         """Train het model op de huidige recordset. Retourneert None als onvoldoende data."""
         if len(self._records) < MIN_TRAINING_SAMPLES:
             logger.info(
                 "FeedbackEngine: onvoldoende data voor training (%d < %d)",
-                len(self._records), MIN_TRAINING_SAMPLES,
+                len(self._records),
+                MIN_TRAINING_SAMPLES,
             )
             return None
 
         try:
+            import joblib
             from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
             from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
             from sklearn.model_selection import train_test_split
-            import joblib
 
             df = self._to_dataframe()
-            X = df[MODEL_FEATURES].fillna(0.0)
+            features_df = df[MODEL_FEATURES].fillna(0.0)
             y = df["is_winner"].astype(int)
 
             if y.nunique() < 2:
-                logger.warning("FeedbackEngine: alle trades zijn %s — niet nuttig om te trainen", "winst" if y.iloc[0] == 1 else "verlies")
+                logger.warning(
+                    "FeedbackEngine: alle trades zijn %s — niet nuttig om te trainen",
+                    "winst" if y.iloc[0] == 1 else "verlies",
+                )
                 return None
 
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=0.2, random_state=42, stratify=y
+            x_train, x_test, y_train, y_test = train_test_split(
+                features_df,
+                y,
+                test_size=0.2,
+                random_state=42,
+                stratify=y,
             )
 
             gb = GradientBoostingClassifier(
-                n_estimators=100, max_depth=3, learning_rate=0.1,
-                subsample=0.8, random_state=42,
+                n_estimators=100,
+                max_depth=3,
+                learning_rate=0.1,
+                subsample=0.8,
+                random_state=42,
             )
-            gb.fit(X_train, y_train)
+            gb.fit(x_train, y_train)
 
             rf = RandomForestClassifier(
-                n_estimators=100, max_depth=4,
-                min_samples_leaf=3, random_state=42,
+                n_estimators=100,
+                max_depth=4,
+                min_samples_leaf=3,
+                random_state=42,
             )
-            rf.fit(X_train, y_train)
+            rf.fit(x_train, y_train)
 
             # Ensemble vote
-            gb_proba = gb.predict_proba(X_test)[:, 1]
-            rf_proba = rf.predict_proba(X_test)[:, 1]
-            ensemble_proba = (gb_proba * 0.6 + rf_proba * 0.4)
+            gb_proba = gb.predict_proba(x_test)[:, 1]
+            rf_proba = rf.predict_proba(x_test)[:, 1]
+            ensemble_proba = gb_proba * 0.6 + rf_proba * 0.4
             y_pred = (ensemble_proba >= 0.5).astype(int)
 
             # Feature importance van GB
@@ -287,7 +325,9 @@ class FeedbackEngine:
             joblib.dump({"gb": gb, "rf": rf, "features": MODEL_FEATURES}, self._artifact_path)
             logger.info(
                 "FeedbackEngine: model getraind — accuracy=%.1f%% f1=%.1f%% samples=%d",
-                metrics.accuracy * 100, metrics.f1 * 100, metrics.sample_count,
+                metrics.accuracy * 100,
+                metrics.f1 * 100,
+                metrics.sample_count,
             )
             return metrics
 
@@ -308,11 +348,12 @@ class FeedbackEngine:
 
         try:
             import pandas as pd
-            row = {k: features.get(k, 0.0) for k in MODEL_FEATURES}
-            X = pd.DataFrame([row])
 
-            gb_proba = self._model_gb.predict_proba(X)[0][1]
-            rf_proba = self._model_rf.predict_proba(X)[0][1]
+            row = {k: features.get(k, 0.0) for k in MODEL_FEATURES}
+            features_df = pd.DataFrame([row])
+
+            gb_proba = self._model_gb.predict_proba(features_df)[0][1]
+            rf_proba = self._model_rf.predict_proba(features_df)[0][1]
             ensemble = gb_proba * 0.6 + rf_proba * 0.4
             return float(round(max(0.0, min(1.0, ensemble)), 4))
 
@@ -320,7 +361,7 @@ class FeedbackEngine:
             logger.debug("FeedbackEngine: confidence prediction mislukt: %s", exc)
             return 0.5
 
-    def get_metrics(self) -> Optional[dict]:
+    def get_metrics(self) -> dict | None:
         if self._metrics is None:
             return None
         return self._metrics.to_dict()
@@ -336,6 +377,7 @@ class FeedbackEngine:
     def get_top_setups(self, n: int = 5) -> list[dict]:
         """Geeft de top-N winnende setup types terug."""
         from collections import defaultdict
+
         stats: dict[str, dict] = defaultdict(lambda: {"wins": 0, "total": 0, "total_pnl": 0.0})
 
         for rec in self._records:
@@ -348,13 +390,15 @@ class FeedbackEngine:
         ranked = []
         for key, s in stats.items():
             win_rate = s["wins"] / s["total"] if s["total"] > 0 else 0.0
-            ranked.append({
-                "setup": key,
-                "win_rate": round(win_rate, 3),
-                "total_pnl": round(s["total_pnl"], 2),
-                "count": s["total"],
-                "score": round(win_rate * math.log1p(s["total"]) * (1 + s["total_pnl"] / 1000), 3),
-            })
+            ranked.append(
+                {
+                    "setup": key,
+                    "win_rate": round(win_rate, 3),
+                    "total_pnl": round(s["total_pnl"], 2),
+                    "count": s["total"],
+                    "score": round(win_rate * math.log1p(s["total"]) * (1 + s["total_pnl"] / 1000), 3),
+                }
+            )
 
         return sorted(ranked, key=lambda x: x["score"], reverse=True)[:n]
 
@@ -378,6 +422,7 @@ class FeedbackEngine:
             return
         try:
             import joblib
+
             data = joblib.load(self._artifact_path)
             self._model_gb = data.get("gb")
             self._model_rf = data.get("rf")

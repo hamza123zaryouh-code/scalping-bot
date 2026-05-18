@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -17,7 +16,7 @@ router = APIRouter()
 _VALID_LEVELS = {"DEBUG", "INFO", "SIGNAL", "WARNING", "TRADE", "ERROR", "CRITICAL"}
 
 
-def _validate_level(level: Optional[str]) -> Optional[str]:
+def _validate_level(level: str | None) -> str | None:
     if level is None:
         return None
     upper = level.upper()
@@ -27,7 +26,7 @@ def _validate_level(level: Optional[str]) -> Optional[str]:
 @router.get("/recent", response_model=APIResponse[dict], summary="Recent log entries")
 async def recent_logs(
     n: int = Query(default=200, ge=1, le=2000),
-    level: Optional[str] = Query(default=None, description="Filter: DEBUG|INFO|SIGNAL|WARNING|TRADE|ERROR|CRITICAL"),
+    level: str | None = Query(default=None, description="Filter: DEBUG|INFO|SIGNAL|WARNING|TRADE|ERROR|CRITICAL"),
     _user: dict = Depends(get_current_user),
 ):
     """Return the last N log entries from the ring buffer."""
@@ -43,7 +42,7 @@ async def recent_logs(
 @router.get("/since/{seq}", response_model=APIResponse[dict], summary="Log entries since sequence number")
 async def logs_since(
     seq: int,
-    level: Optional[str] = Query(default=None),
+    level: str | None = Query(default=None),
     _user: dict = Depends(get_current_user),
 ):
     """Return log entries newer than the given sequence number (for polling)."""
@@ -59,7 +58,7 @@ async def logs_since(
 @router.get("/stream", summary="SSE live log stream (Server-Sent Events)")
 async def stream_logs(
     since: int = Query(default=0, description="Start from this sequence number"),
-    level: Optional[str] = Query(default=None),
+    level: str | None = Query(default=None),
     _user: dict = Depends(get_current_user),
 ):
     """

@@ -65,3 +65,13 @@ def assert_telegram_owner(telegram_user_id: str, settings: Settings) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Telegram owner not configured")
     if telegram_user_id != owner:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Unauthorized Telegram user")
+
+
+def require_telegram_owner_header(
+    x_telegram_user_id: str | None = Header(default=None, alias="X-Telegram-User-Id"),
+    settings: Settings = Depends(get_settings),
+) -> str:
+    if x_telegram_user_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Missing Telegram user header")
+    assert_telegram_owner(x_telegram_user_id, settings)
+    return x_telegram_user_id

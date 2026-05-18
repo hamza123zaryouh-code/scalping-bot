@@ -46,7 +46,7 @@ class SignalService:
 
     def get_open_positions(self) -> list[OpenPosition]:
         try:
-            import MetaTrader5 as mt5  # type: ignore
+            import MetaTrader5 as mt5  # type: ignore[import-not-found]  # noqa: N813
         except ImportError:
             return []
 

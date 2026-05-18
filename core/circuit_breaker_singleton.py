@@ -1,5 +1,6 @@
 """Singleton circuit breaker instance — gedeeld door alle modules."""
 from __future__ import annotations
+
 from .risk_engine import CircuitBreaker
 
 _instance: CircuitBreaker | None = None

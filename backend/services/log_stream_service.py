@@ -7,15 +7,15 @@ available for real-time consumption via SSE or WebSocket.
 Log levels supported: DEBUG | INFO | WARNING | ERROR | CRITICAL
 Custom levels: SIGNAL (25), TRADE (35) — inserted between std levels.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections import deque
-from dataclasses import dataclass, field
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import AsyncIterator, Optional
 
 # Custom log levels
 SIGNAL_LEVEL = 25
@@ -27,6 +27,7 @@ logging.addLevelName(TRADE_LEVEL, "TRADE")
 @dataclass
 class LogRecord:
     """Single captured log record."""
+
     timestamp: str
     level: str
     logger_name: str
@@ -58,13 +59,13 @@ class LogRingBuffer:
         self._seq += 1
         return self._seq
 
-    def since(self, seq: int, level_filter: Optional[str] = None) -> list[LogRecord]:
+    def since(self, seq: int, level_filter: str | None = None) -> list[LogRecord]:
         result = [r for r in self._buf if r.seq > seq]
         if level_filter:
             result = [r for r in result if r.level == level_filter.upper()]
         return result
 
-    def tail(self, n: int = 100, level_filter: Optional[str] = None) -> list[LogRecord]:
+    def tail(self, n: int = 100, level_filter: str | None = None) -> list[LogRecord]:
         records = list(self._buf)
         if level_filter:
             records = [r for r in records if r.level == level_filter.upper()]
@@ -83,7 +84,7 @@ class WebSocketLogHandler(logging.Handler):
     def __init__(self, buffer: LogRingBuffer) -> None:
         super().__init__()
         self._buffer = buffer
-        self._broadcast_cb = None      # set by LogStreamService
+        self._broadcast_cb = None  # set by LogStreamService
 
     def set_broadcast_callback(self, cb) -> None:
         self._broadcast_cb = cb
@@ -103,9 +104,7 @@ class WebSocketLogHandler(logging.Handler):
                 try:
                     loop = asyncio.get_running_loop()
                     cb = self._broadcast_cb
-                    loop.call_soon_threadsafe(
-                        lambda e=log_entry: asyncio.ensure_future(cb(e))
-                    )
+                    loop.call_soon_threadsafe(lambda e=log_entry: asyncio.ensure_future(cb(e)))
                 except RuntimeError:
                     pass  # No running event loop in this thread
                 except Exception:
@@ -147,10 +146,10 @@ class LogStreamService:
         logging.getLogger().addHandler(self._handler)
         self._installed = True
 
-    def get_recent(self, n: int = 200, level: Optional[str] = None) -> list[dict]:
+    def get_recent(self, n: int = 200, level: str | None = None) -> list[dict]:
         return [r.to_dict() for r in self._buffer.tail(n, level_filter=level)]
 
-    def get_since(self, seq: int, level: Optional[str] = None) -> list[dict]:
+    def get_since(self, seq: int, level: str | None = None) -> list[dict]:
         return [r.to_dict() for r in self._buffer.since(seq, level_filter=level)]
 
     def last_seq(self) -> int:
@@ -172,7 +171,7 @@ class LogStreamService:
     async def stream_sse(
         self,
         since_seq: int = 0,
-        level: Optional[str] = None,
+        level: str | None = None,
         heartbeat_interval: float = 15.0,
     ) -> AsyncIterator[str]:
         """
@@ -187,18 +186,15 @@ class LogStreamService:
         queue: asyncio.Queue[LogRecord] = asyncio.Queue(maxsize=500)
         self._subscribers.append(queue)
 
-        last_heartbeat = time.monotonic()
         try:
             while True:
                 try:
                     record = await asyncio.wait_for(queue.get(), timeout=heartbeat_interval)
                     if level is None or record.level == level.upper():
                         yield _sse_event(record.to_dict())
-                    last_heartbeat = time.monotonic()
                 except asyncio.TimeoutError:
                     # Heartbeat to keep connection alive
                     yield ": heartbeat\n\n"
-                    last_heartbeat = time.monotonic()
         finally:
             try:
                 self._subscribers.remove(queue)
@@ -208,6 +204,7 @@ class LogStreamService:
 
 def _sse_event(data: dict) -> str:
     import json
+
     return f"data: {json.dumps(data)}\n\n"
 
 
@@ -215,7 +212,7 @@ def _sse_event(data: dict) -> str:
 # SINGLETON
 # ─────────────────────────────────────────────────────────────────
 
-_service: Optional[LogStreamService] = None
+_service: LogStreamService | None = None
 
 
 def get_log_stream_service() -> LogStreamService:

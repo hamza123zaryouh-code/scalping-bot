@@ -1,8 +1,7 @@
 """Tests for balance/equity 0.0 handling in TelegramService.get_status_overview()."""
 from __future__ import annotations
 
-import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 def _service(state: dict, runtime: dict, starting_capital: float = 160_000.0):

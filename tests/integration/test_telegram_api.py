@@ -4,13 +4,25 @@ from pathlib import Path
 
 
 def _headers() -> dict[str, str]:
-    return {"X-API-Key": "test_secret_key_32_characters_long"}
+    return {
+        "X-API-Key": "test_secret_key_32_characters_long",
+        "X-Telegram-User-Id": "999",
+    }
 
 
 def test_telegram_status_requires_api_key(strict_api_client):
     response = strict_api_client.get("/api/v1/telegram/status")
     assert response.status_code == 403
     assert response.json()["detail"] == "Invalid Telegram control API key"
+
+
+def test_telegram_status_requires_owner_header(api_client):
+    response = api_client.get(
+        "/api/v1/telegram/status",
+        headers={"X-API-Key": "test_secret_key_32_characters_long"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Missing Telegram user header"
 
 
 def test_telegram_status_returns_dashboard_snapshot(api_client):

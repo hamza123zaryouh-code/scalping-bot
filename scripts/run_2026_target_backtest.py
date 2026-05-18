@@ -17,11 +17,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import numpy as np
 import pandas as pd
 
-from backend.services.backtest_service import BacktestService
 from backend.api.schemas.backtest import BacktestRequest
+from backend.services.backtest_service import BacktestService
 
 GREEN  = "\033[92m"
 RED    = "\033[91m"
@@ -54,7 +53,7 @@ def run_2026_target(capital: float, target: float, start: date, end: date) -> No
     print(f"  Startkapitaal : {BOLD}EUR {capital:,.0f}{RESET}")
     print(f"  Winstdoel     : {BOLD}{GREEN}+EUR {target:,.0f}{RESET}")
     print(f"  Periode       : {start} - {end}")
-    print(f"  Data          : Gold Futures GC=F H1 via yfinance\n")
+    print("  Data          : Gold Futures GC=F H1 via yfinance\n")
 
     svc = BacktestService()
     print("  Data laden en indicatoren berekenen...")

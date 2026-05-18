@@ -9,7 +9,6 @@ import psycopg
 from dotenv import load_dotenv
 from sqlalchemy.engine import make_url
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "webapp" / "supabase" / "schema.sql"
 DATABASE_ENV_ORDER = ("SUPABASE_DB_URL", "POSTGRES_URL", "SUPABASE_POOLER_URL")

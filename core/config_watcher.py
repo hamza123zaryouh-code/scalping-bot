@@ -20,12 +20,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +52,10 @@ class ConfigWatcher:
         self._poll_interval = poll_interval
         self._config: dict = {}
         self._last_mtime: float = 0.0
-        self._last_loaded: Optional[datetime] = None
+        self._last_loaded: datetime | None = None
         self._callbacks: list[Callable] = []
         self._running = False
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
 
         # Initieel laden
@@ -109,7 +109,7 @@ class ConfigWatcher:
         return self._load(force=True)
 
     @property
-    def last_loaded(self) -> Optional[datetime]:
+    def last_loaded(self) -> datetime | None:
         return self._last_loaded
 
     @property
@@ -285,10 +285,10 @@ class StrategyConfigManager:
     def __init__(self, config_path: str = "configs/live_strategy.json"):
         self._path = Path(config_path)
         self._cfg = dict(self.DEFAULT_STRATEGY_CFG)
-        self._watcher: Optional[ConfigWatcher] = None
+        self._watcher: ConfigWatcher | None = None
         self._lock = threading.RLock()
         self._reload_count = 0
-        self._last_reload: Optional[datetime] = None
+        self._last_reload: datetime | None = None
 
         self._ensure_config_exists()
         self._watcher = ConfigWatcher(self._path, auto_start=False)

@@ -1,4 +1,5 @@
 """Tests for production-critical guards in AutonomousTradingSystem._run_cycle()."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -7,7 +8,7 @@ from unittest.mock import MagicMock, patch
 def _make_system():
     """Build an AutonomousTradingSystem with all heavy dependencies stubbed out."""
     with (
-        patch("autonomous_xauusd.main.MemoryLayer") as MockMemory,
+        patch("autonomous_xauusd.main.MemoryLayer") as mock_memory,
         patch("autonomous_xauusd.main.IntelligenceLayer"),
         patch("autonomous_xauusd.main.DataExecutionLayer"),
         patch("autonomous_xauusd.main.SentimentEngine"),
@@ -23,7 +24,7 @@ def _make_system():
     ):
         from autonomous_xauusd.main import AutonomousTradingSystem
 
-        memory_instance = MockMemory.return_value
+        memory_instance = mock_memory.return_value
         memory_instance.initialize.return_value = None
         memory_instance.load_strategy_parameters.return_value = MagicMock()
         memory_instance.save_strategy_parameters.return_value = None
@@ -70,6 +71,76 @@ def test_run_cycle_does_not_trade_when_bot_inactive():
     system.engine.fetch_recent_candles.assert_not_called()
     system.brain.generate_signal.assert_not_called()
     system.engine.execute_trade.assert_not_called()
+
+
+def test_can_open_trade_blocks_when_orphaned_positions_present():
+    system = _make_system()
+    system.memory.get_runtime_state.side_effect = lambda key: {"count": 2} if key == "orphaned_positions" else None
+    system.memory.list_open_trades.return_value = []
+    system.memory.daily_summary.return_value = {"trade_count": 0, "loss_count": 0}
+    system.settings.max_open_positions = 3
+    system.settings.max_trades_per_day = 5
+    system.settings.max_losses_per_day = 3
+    system.settings.signal_cooldown_minutes = 60
+
+    allowed, reason = system._can_open_trade({"equity": 160000.0, "balance": 160000.0})
+
+    assert allowed is False
+    assert reason == "orphaned_positions_detected=2"
+
+
+def test_can_open_trade_counts_only_positions_opened_today():
+    from datetime import date, datetime
+
+    system = _make_system()
+    system.memory.get_runtime_state.return_value = None
+    system.memory.list_open_trades.return_value = [
+        {"opened_at": MagicMock(date=lambda: date(2026, 5, 18))},
+        {"opened_at": MagicMock(date=lambda: date(2026, 5, 17))},
+    ]
+    system.memory.daily_summary.return_value = {"trade_count": 3, "loss_count": 0}
+    system.settings.max_open_positions = 5
+    system.settings.max_trades_per_day = 5
+    system.settings.max_losses_per_day = 3
+    system.settings.signal_cooldown_minutes = 60
+
+    with patch("autonomous_xauusd.main.datetime") as mock_datetime:
+        mock_datetime.now.return_value = MagicMock(date=lambda: date(2026, 5, 18))
+        mock_datetime.fromisoformat.side_effect = datetime.fromisoformat
+        allowed, reason = system._can_open_trade({"equity": 160000.0, "balance": 160000.0})
+
+    assert allowed is True
+    assert reason == "alle_gates_ok"
+
+
+def test_can_open_trade_uses_explicit_loss_count():
+    system = _make_system()
+    system.memory.get_runtime_state.return_value = None
+    system.memory.list_open_trades.return_value = []
+    system.memory.daily_summary.return_value = {"trade_count": 1, "loss_count": 3, "win_rate": 1.0}
+    system.settings.max_open_positions = 5
+    system.settings.max_trades_per_day = 5
+    system.settings.max_losses_per_day = 3
+    system.settings.signal_cooldown_minutes = 60
+
+    allowed, reason = system._can_open_trade({"equity": 160000.0, "balance": 160000.0})
+
+    assert allowed is False
+    assert "max_losses_per_day=3" in reason
+
+
+def test_process_control_commands_marks_malformed_payload_failed():
+    system = _make_system()
+    system.memory.fetch_pending_control_commands.return_value = [{"id": 42, "command": None}]
+
+    system._process_control_commands()
+
+    system.memory.update_control_command.assert_called_once_with(
+        42,
+        "failed",
+        error_message="Malformed control command payload.",
+    )
+    system.telegram.notify.assert_not_called()
 
 
 def test_run_cycle_proceeds_when_bot_active():

@@ -7,6 +7,7 @@ Toont weekoverzicht per scenario.
 Gebruik:
     python scripts/run_2026_optimize_compare.py
 """
+
 from __future__ import annotations
 
 import sys
@@ -17,16 +18,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 
-from backend.services.backtest_service import BacktestService
 from backend.api.schemas.backtest import BacktestRequest
+from backend.services.backtest_service import BacktestService
 from core.strategy_engine import DEFAULT_CFG
 
-GREEN  = "\033[92m"
-RED    = "\033[91m"
+GREEN = "\033[92m"
+RED = "\033[91m"
 YELLOW = "\033[93m"
-CYAN   = "\033[96m"
-BOLD   = "\033[1m"
-RESET  = "\033[0m"
+CYAN = "\033[96m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
 
 
 def clr(val: float, fmt: str = "+.2f") -> str:
@@ -53,27 +54,27 @@ SCENARIOS = {
     },
     "BALANCED (2x Risk)": {
         **DEFAULT_CFG,
-        "risk_a":     0.0080,   # 2x
-        "risk_b":     0.0060,   # 2x
-        "risk_c":     0.0050,   # 2x
-        "cooldown_h": 1,        # 2h -> 1h
-        "adx_min":    12,       # 14 -> 12
-        "max_dag":    8,        # 6 -> 8
+        "risk_a": 0.0080,  # 2x
+        "risk_b": 0.0060,  # 2x
+        "risk_c": 0.0050,  # 2x
+        "cooldown_h": 1,  # 2h -> 1h
+        "adx_min": 12,  # 14 -> 12
+        "max_dag": 8,  # 6 -> 8
         "_label": "balanced",
         "_color": CYAN,
     },
     "AGRESSIEF (3x Risk)": {
         **DEFAULT_CFG,
-        "risk_a":     0.0120,   # 3x
-        "risk_b":     0.0090,   # 3x
-        "risk_c":     0.0075,   # 3x
-        "cooldown_h": 1,        # 1h
-        "adx_min":    10,       # 14 -> 10 (meer signalen)
-        "max_dag":    10,       # 10/dag
-        "sl_dag_max": 3,        # 2 -> 3 SL's per dag
-        "tp1_r":      1.5,
-        "tp2_r":      3.0,      # 2.5 -> 3.0
-        "tp3_r":      5.0,      # 4.0 -> 5.0
+        "risk_a": 0.0120,  # 3x
+        "risk_b": 0.0090,  # 3x
+        "risk_c": 0.0075,  # 3x
+        "cooldown_h": 1,  # 1h
+        "adx_min": 10,  # 14 -> 10 (meer signalen)
+        "max_dag": 10,  # 10/dag
+        "sl_dag_max": 3,  # 2 -> 3 SL's per dag
+        "tp1_r": 1.5,
+        "tp2_r": 3.0,  # 2.5 -> 3.0
+        "tp3_r": 5.0,  # 4.0 -> 5.0
         "_label": "agressief",
         "_color": RED,
     },
@@ -82,7 +83,7 @@ SCENARIOS = {
 TARGET = 16_000.0
 CAPITAL = 160_000.0
 START = date(2026, 1, 1)
-END   = date(2026, 5, 14)
+END = date(2026, 5, 14)
 
 
 def run_scenario(svc: BacktestService, name: str, params: dict, df_feat: pd.DataFrame) -> dict:
@@ -100,9 +101,9 @@ def run_scenario(svc: BacktestService, name: str, params: dict, df_feat: pd.Data
         return {"name": name, "trades": [], "error": "Geen trades"}
 
     df = pd.DataFrame(raw_trades)
-    df["in_dt"]  = pd.to_datetime(df["in"],  utc=True, errors="coerce")
+    df["in_dt"] = pd.to_datetime(df["in"], utc=True, errors="coerce")
     df["uit_dt"] = pd.to_datetime(df["uit"], utc=True, errors="coerce")
-    df["pnl"]    = df["pnl"].astype(float)
+    df["pnl"] = df["pnl"].astype(float)
 
     # Alleen 2026 trades
     start_ts = pd.Timestamp(START, tz="UTC")
@@ -116,7 +117,7 @@ def run_scenario(svc: BacktestService, name: str, params: dict, df_feat: pd.Data
         stop_i = int(hit.index[0])
         stop_dt = df.iloc[stop_i]["uit_dt"]
         days = (stop_dt - pd.Timestamp(START, tz="UTC")).days + 1
-        df_used = df.iloc[:stop_i + 1].copy()
+        df_used = df.iloc[: stop_i + 1].copy()
         target_hit = True
     else:
         df_used = df.copy()
@@ -124,12 +125,12 @@ def run_scenario(svc: BacktestService, name: str, params: dict, df_feat: pd.Data
         stop_dt = None
         target_hit = False
 
-    pnl_s  = df_used["pnl"]
-    wins   = pnl_s[pnl_s > 0]
+    pnl_s = df_used["pnl"]
+    wins = pnl_s[pnl_s > 0]
     losses = pnl_s[pnl_s < 0]
     cum_eq = pnl_s.cumsum() + CAPITAL
-    peak   = cum_eq.cummax()
-    dd_pct = ((peak - cum_eq) / peak * 100)
+    peak = cum_eq.cummax()
+    dd_pct = (peak - cum_eq) / peak * 100
     max_dd = float(dd_pct.max()) if len(dd_pct) else 0.0
     pf = float(wins.sum() / losses.abs().sum()) if not losses.empty and losses.abs().sum() > 0 else 99.0
 
@@ -163,8 +164,7 @@ def main() -> None:
 
     svc = BacktestService()
     print("  Data laden...")
-    req0 = BacktestRequest(start_date=str(START), end_date=str(END), starting_capital=CAPITAL)
-    df_raw  = svc._fetch_data(START, END)
+    df_raw = svc._fetch_data(START, END)
     df_feat = svc._engine.prepare_features(df_raw)
     print(f"  {len(df_feat)} H1 bars geladen. Scenarios draaien...\n")
 
@@ -179,8 +179,11 @@ def main() -> None:
 
     # ── VERGELIJKINGSTABEL ───────────────────────────────────────
     sec("SCENARIO VERGELIJKING")
-    print(f"  {'Scenario':<26} {'Trades':>7} {'Winst':>14} {'Win%':>6} {'PF':>5} {'Max DD':>7} {'Doel?':>10} {'Wanneer':>16}")
-    print(f"  {'-'*26} {'-'*7} {'-'*14} {'-'*6} {'-'*5} {'-'*7} {'-'*10} {'-'*16}")
+    print(
+        f"  {'Scenario':<26} {'Trades':>7} {'Winst':>14} "
+        f"{'Win%':>6} {'PF':>5} {'Max DD':>7} {'Doel?':>10} {'Wanneer':>16}"
+    )
+    print(f"  {'-' * 26} {'-' * 7} {'-' * 14} {'-' * 6} {'-' * 5} {'-' * 7} {'-' * 10} {'-' * 16}")
 
     for r in results:
         if r["error"]:
@@ -193,7 +196,7 @@ def main() -> None:
             f"  {r['color']}{BOLD}{r['name']:<26}{RESET} "
             f"{r['n_trades']:>7} "
             f"{clr(r['total_pnl'], '+,.0f'):>23} "
-            f"{r['win_rate']*100:>5.1f}% "
+            f"{r['win_rate'] * 100:>5.1f}% "
             f"{r['profit_factor']:>5.2f} "
             f"{RED if r['max_dd'] > 5 else YELLOW}{r['max_dd']:>6.1f}%{RESET} "
             f"{hit_str:>19}  "
@@ -203,16 +206,16 @@ def main() -> None:
     # ── PARAMETERS TABEL ─────────────────────────────────────────
     sec("PARAMETER WIJZIGINGEN")
     print(f"  {'Parameter':<20} {'Huidig':>10} {'Balanced':>12} {'Agressief':>12}  Uitleg")
-    print(f"  {'-'*20} {'-'*10} {'-'*12} {'-'*12}  {'-'*30}")
+    print(f"  {'-' * 20} {'-' * 10} {'-' * 12} {'-' * 12}  {'-' * 30}")
     param_rows = [
-        ("risk_a",     "0.40%",  "0.80%",  "1.20%",  "Risk voor A-signalen (EMA Cross)"),
-        ("risk_b",     "0.30%",  "0.60%",  "0.90%",  "Risk voor B/C/E-signalen"),
-        ("risk_c",     "0.25%",  "0.50%",  "0.75%",  "Risk voor D/F-signalen"),
-        ("cooldown_h", "2 uur",  "1 uur",  "1 uur",  "Wachttijd tussen trades"),
-        ("adx_min",    "14",     "12",     "10",     "Min. trendsterkte (lager=meer trades)"),
-        ("max_dag",    "6",      "8",      "10",     "Max trades per dag"),
-        ("tp2_r",      "2.5x",   "2.5x",   "3.0x",   "TP2 reward ratio"),
-        ("tp3_r",      "4.0x",   "4.0x",   "5.0x",   "TP3 reward ratio (runners)"),
+        ("risk_a", "0.40%", "0.80%", "1.20%", "Risk voor A-signalen (EMA Cross)"),
+        ("risk_b", "0.30%", "0.60%", "0.90%", "Risk voor B/C/E-signalen"),
+        ("risk_c", "0.25%", "0.50%", "0.75%", "Risk voor D/F-signalen"),
+        ("cooldown_h", "2 uur", "1 uur", "1 uur", "Wachttijd tussen trades"),
+        ("adx_min", "14", "12", "10", "Min. trendsterkte (lager=meer trades)"),
+        ("max_dag", "6", "8", "10", "Max trades per dag"),
+        ("tp2_r", "2.5x", "2.5x", "3.0x", "TP2 reward ratio"),
+        ("tp3_r", "4.0x", "4.0x", "5.0x", "TP3 reward ratio (runners)"),
     ]
     for row in param_rows:
         print(f"  {row[0]:<20} {row[1]:>10} {CYAN}{row[2]:>12}{RESET} {RED}{row[3]:>12}{RESET}  {row[4]}")
@@ -222,13 +225,17 @@ def main() -> None:
         if r["error"] or not r["weekly"]:
             continue
         sec(f"WEEKOVERZICHT — {r['name']}")
-        print(f"  {'Week':<10} {'Start':>13} {'Eind':>13} {'Trades':>7} {'P&L':>14} {'Win%':>6} {'Cum.winst':>12}  Status")
-        print(f"  {'-'*10} {'-'*13} {'-'*13} {'-'*7} {'-'*14} {'-'*6} {'-'*12}  {'-'*10}")
+        print(
+            f"  {'Week':<10} {'Start':>13} {'Eind':>13} {'Trades':>7} {'P&L':>14} {'Win%':>6} {'Cum.winst':>12}  Status"
+        )
+        print(f"  {'-' * 10} {'-' * 13} {'-' * 13} {'-' * 7} {'-' * 14} {'-' * 6} {'-' * 12}  {'-' * 10}")
 
         cum = 0.0
         for w in r["weekly"]:
             cum += float(w.pnl)
-            hit_mark = f"  {GREEN}<-- DOEL!{RESET}" if cum >= TARGET and r["target_hit"] and w == r["weekly"][-1] else ""
+            hit_mark = (
+                f"  {GREEN}<-- DOEL!{RESET}" if cum >= TARGET and r["target_hit"] and w == r["weekly"][-1] else ""
+            )
             target_bar = f"{GREEN}" if cum >= TARGET else ""
             target_end = RESET if cum >= TARGET else ""
             print(
@@ -237,7 +244,7 @@ def main() -> None:
                 f"EUR {float(w.end_equity):>9,.0f} "
                 f"{int(w.trades):>7} "
                 f"{clr(float(w.pnl), '+,.0f'):>23} "
-                f"{float(w.win_rate)*100:>5.1f}% "
+                f"{float(w.win_rate) * 100:>5.1f}% "
                 f"{target_bar}{clr(cum, '+,.0f'):>21}{target_end}"
                 f"{hit_mark}"
             )

@@ -14,13 +14,13 @@ Circuit breakers:
 
 Elke check is autonoom en herstart vanzelf na recovery.
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, date, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -29,22 +29,22 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────
 
 FTMO_STARTING_CAPITAL = 160_000.0
-FTMO_DAILY_LOSS_LIMIT = 6_000.0       # Interne daglimiet €6k per dag
-FTMO_TOTAL_LOSS_LIMIT = 16_000.0      # €16k totaal (10%)
+FTMO_DAILY_LOSS_LIMIT = 6_000.0  # Interne daglimiet €6k per dag
+FTMO_TOTAL_LOSS_LIMIT = 16_000.0  # €16k totaal (10%)
 FTMO_DAILY_LOSS_PCT = FTMO_DAILY_LOSS_LIMIT / FTMO_STARTING_CAPITAL
-FTMO_TOTAL_LOSS_PCT = 0.10            # 10% totaal
+FTMO_TOTAL_LOSS_PCT = 0.10  # 10% totaal
 
 # Interne limieten (conservatiever dan FTMO)
-INTERNAL_DAILY_LOSS_PCT = 0.65        # 65% van FTMO dag-limiet
-INTERNAL_DRAWDOWN_PAUSE_PCT = 0.04    # 4% → risk halvering
-INTERNAL_DRAWDOWN_STOP_PCT = 0.055    # 5.5% → trading stop
-LOSS_STREAK_COOLDOWN = 3              # 3 verliezen op rij → cooldown
-VOLATILITY_MULTIPLIER_THRESHOLD = 3.0 # 3x normaal ATR → safe mode
-MAX_SPREAD_POINTS = 350               # Max toegestane spread in points
+INTERNAL_DAILY_LOSS_PCT = 0.65  # 65% van FTMO dag-limiet
+INTERNAL_DRAWDOWN_PAUSE_PCT = 0.04  # 4% → risk halvering
+INTERNAL_DRAWDOWN_STOP_PCT = 0.055  # 5.5% → trading stop
+LOSS_STREAK_COOLDOWN = 3  # 3 verliezen op rij → cooldown
+VOLATILITY_MULTIPLIER_THRESHOLD = 3.0  # 3x normaal ATR → safe mode
+MAX_SPREAD_POINTS = 350  # Max toegestane spread in points
 
 # Graduated capital protection thresholds (% van FTMO dag-limiet gebruikt)
-GRAD_STAGE1_PCT = 0.50   # 50% dagverlies → alleen signaaltype C/F/D (laagste risico)
-GRAD_STAGE2_PCT = 0.75   # 75% dagverlies → stop (vóór FTMO breuk)
+GRAD_STAGE1_PCT = 0.50  # 50% dagverlies → alleen signaaltype C/F/D (laagste risico)
+GRAD_STAGE2_PCT = 0.75  # 75% dagverlies → stop (vóór FTMO breuk)
 
 
 class CircuitBreakerReason(str, Enum):
@@ -62,11 +62,12 @@ class CircuitBreakerReason(str, Enum):
 @dataclass
 class RiskState:
     """Volledige risicostate van het systeem."""
+
     can_trade: bool = True
     circuit_breaker_active: bool = False
     circuit_breaker_reason: str = CircuitBreakerReason.NONE
-    circuit_breaker_since: Optional[datetime] = None
-    cooldown_until: Optional[datetime] = None
+    circuit_breaker_since: datetime | None = None
+    cooldown_until: datetime | None = None
 
     # Account state
     starting_capital: float = FTMO_STARTING_CAPITAL
@@ -86,10 +87,10 @@ class RiskState:
     recent_results: list = field(default_factory=list)
 
     # Risk scaling
-    risk_multiplier: float = 1.0    # 1.0 = normaal, 0.5 = half, 0.25 = kwart
+    risk_multiplier: float = 1.0  # 1.0 = normaal, 0.5 = half, 0.25 = kwart
 
     # Graduated capital protection
-    graduated_stage: int = 0         # 0=normaal, 1=beperkte signalen, 2=dag-stop
+    graduated_stage: int = 0  # 0=normaal, 1=beperkte signalen, 2=dag-stop
     allowed_signal_types: list = field(default_factory=list)  # leeg = alle
 
     # FTMO compliance
@@ -187,7 +188,7 @@ class CircuitBreaker:
     def state(self) -> RiskState:
         return self._state
 
-    def update_balance(self, balance: float, equity: Optional[float] = None) -> None:
+    def update_balance(self, balance: float, equity: float | None = None) -> None:
         """Update het saldo na trade of periodiek."""
         s = self._state
         today = date.today()
@@ -212,10 +213,7 @@ class CircuitBreaker:
         s.ftmo_total_loss_used = total_loss
         s.ftmo_daily_loss_pct = daily_loss / s.day_start_balance if s.day_start_balance > 0 else 0.0
         s.ftmo_total_loss_pct = total_loss / s.starting_capital if s.starting_capital > 0 else 0.0
-        s.ftmo_compliant = (
-            daily_loss < self._daily_limit and
-            total_loss < self._total_limit
-        )
+        s.ftmo_compliant = daily_loss < self._daily_limit and total_loss < self._total_limit
 
         self._evaluate()
 
@@ -241,14 +239,16 @@ class CircuitBreaker:
         if pnl < 0:
             logger.warning(
                 "Verlies geregistreerd: €%.2f | Streak: %d | Dag verliezen: %d",
-                pnl, s.consecutive_losses, s.daily_losses,
+                pnl,
+                s.consecutive_losses,
+                s.daily_losses,
             )
 
     def update_market_conditions(
         self,
         spread: float,
-        atr: Optional[float] = None,
-        baseline_atr: Optional[float] = None,
+        atr: float | None = None,
+        baseline_atr: float | None = None,
     ) -> None:
         """Update marktcondities (spread, volatiliteit)."""
         s = self._state
@@ -382,7 +382,8 @@ class CircuitBreaker:
             block_trading = True
             logger.warning(
                 "LOSS STREAK: %d verliezen op rij → %d min cooldown",
-                s.consecutive_losses, cooldown_minutes,
+                s.consecutive_losses,
+                cooldown_minutes,
             )
 
         # 6. Spread te hoog
@@ -462,8 +463,12 @@ class CircuitBreaker:
             CircuitBreakerReason.DAILY_LOSS_LIMIT: "Dagelijkse verliesgrens bereikt — wacht op nieuwe dag",
             CircuitBreakerReason.TOTAL_DRAWDOWN: "Totale drawdown grens bereikt — account beschermd",
             CircuitBreakerReason.LOSS_STREAK: f"Verlies reeks gedetecteerd — {self._state.cooldown_until} cooldown",
-            CircuitBreakerReason.HIGH_SPREAD: f"Spread te hoog ({self._state.current_spread:.0f} pts > {self._max_spread})",
-            CircuitBreakerReason.HIGH_VOLATILITY: f"Abnormale volatiliteit ({self._state.volatility_ratio:.1f}x normaal)",
+            CircuitBreakerReason.HIGH_SPREAD: (
+                f"Spread te hoog ({self._state.current_spread:.0f} pts > {self._max_spread})"
+            ),
+            CircuitBreakerReason.HIGH_VOLATILITY: (
+                f"Abnormale volatiliteit ({self._state.volatility_ratio:.1f}x normaal)"
+            ),
             CircuitBreakerReason.SESSION_ANOMALY: "Sessie anomalie gedetecteerd — veiligheid prioriteit",
             CircuitBreakerReason.MANUAL_STOP: "Handmatig gestopt via commando",
             CircuitBreakerReason.FTMO_RISK: "FTMO bescherming actief",
@@ -472,16 +477,21 @@ class CircuitBreaker:
 
     def _get_risk_level(self) -> str:
         dd = self._state._drawdown_pct
-        if dd >= 0.055:     return "KRITIEK"
-        elif dd >= 0.04:    return "HOOG"
-        elif dd >= 0.025:   return "GEMIDDELD"
-        elif dd >= 0.01:    return "LAAG"
+        if dd >= 0.055:
+            return "KRITIEK"
+        elif dd >= 0.04:
+            return "HOOG"
+        elif dd >= 0.025:
+            return "GEMIDDELD"
+        elif dd >= 0.01:
+            return "LAAG"
         return "NORMAAL"
 
 
 # ─────────────────────────────────────────────────────────────────
 # FTMO COMPLIANCE CHECKER
 # ─────────────────────────────────────────────────────────────────
+
 
 class FTMOCompliance:
     """

@@ -1,22 +1,19 @@
 """Unit tests for risk_manager.py — FTMO buffers, position sizing, guardrails."""
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from core.risk_manager import (
-    FTMOLimits,
-    GuardrailDecision,
     build_ftmo_limits,
     calculate_position_size,
-    calculate_spread_points,
     normalize_volume,
     safe_float,
     validate_ftmo_buffers,
     validate_spread,
     within_trading_window,
 )
-from datetime import datetime
-
 
 # ── safe_float ───────────────────────────────────────────────
 

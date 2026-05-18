@@ -1,8 +1,8 @@
 """Tests for single-instance lock in run_live_bot.py."""
+
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +12,7 @@ def _import_script():
     root = Path(__file__).resolve().parents[2]
     script_path = root / "scripts" / "run_live_bot.py"
     import importlib.util
+
     spec = importlib.util.spec_from_file_location("run_live_bot", script_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -71,7 +72,9 @@ def test_main_calls_lock_before_anything_else(tmp_path):
     with (
         patch.object(mod, "_LOCK_FILE", lock_file),
         patch.object(mod, "_acquire_single_instance_lock", side_effect=fake_lock),
-        patch.object(mod, "_parse_args", return_value=type("A", (), {"log_level": "INFO", "mode": None, "dry_run": False})()),
+        patch.object(
+            mod, "_parse_args", return_value=type("A", (), {"log_level": "INFO", "mode": None, "dry_run": False})()
+        ),
     ):
         try:
             mod.main()

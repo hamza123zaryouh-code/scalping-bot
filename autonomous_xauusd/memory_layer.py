@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
-from typing import Any, Iterator
+from typing import Any
 
 import pandas as pd
 from sqlalchemy import JSON, DateTime, Float, Integer, String, Text, create_engine, select
@@ -252,9 +253,7 @@ class MemoryLayer:
     def recent_control_commands(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.session_scope() as session:
             rows = session.scalars(
-                select(ControlCommand)
-                .order_by(ControlCommand.created_at.desc(), ControlCommand.id.desc())
-                .limit(limit)
+                select(ControlCommand).order_by(ControlCommand.created_at.desc(), ControlCommand.id.desc()).limit(limit)
             ).all()
             return [
                 {
@@ -382,8 +381,12 @@ class MemoryLayer:
             ]
 
     def fetch_training_frame(self) -> pd.DataFrame:
-        _REGIME_SCORE = {
-            "STERK_BULL": 2, "ZWAK_BULL": 1, "CHOPPY": 0, "ZWAK_BEAR": -1, "STERK_BEAR": -2,
+        regime_score = {
+            "STERK_BULL": 2,
+            "ZWAK_BULL": 1,
+            "CHOPPY": 0,
+            "ZWAK_BEAR": -1,
+            "STERK_BEAR": -2,
         }
         with self.session_scope() as session:
             rows = session.scalars(select(TradeLog).where(TradeLog.status == "closed")).all()
@@ -392,24 +395,26 @@ class MemoryLayer:
                 if row.closed_at is None or row.pnl is None:
                     continue
                 holding_minutes = max((row.closed_at - row.opened_at).total_seconds() / 60.0, 0.0)
-                payload.append({
-                    "broker_ticket": row.broker_ticket,
-                    "symbol": row.symbol,
-                    "side": row.side,
-                    "pnl": row.pnl,
-                    "rsi": row.rsi,
-                    "rsi_fast": row.rsi_fast,
-                    "ema_gap": (row.ema_fast or 0.0) - (row.ema_slow or 0.0),
-                    "trend_gap": (row.ema_slow or 0.0) - (row.ema_trend or 0.0),
-                    "atr": row.atr,
-                    "h4_atr": row.h4_atr,
-                    "h4_adx": row.h4_adx,
-                    "h4_regime_score": _REGIME_SCORE.get(row.market_regime or "", 0),
-                    "d1_bull": 1.0 if (row.d1_trend or "") == "bull" else 0.0,
-                    "volatility": row.volatility,
-                    "reward_risk_ratio": row.reward_risk_ratio,
-                    "holding_minutes": holding_minutes,
-                })
+                payload.append(
+                    {
+                        "broker_ticket": row.broker_ticket,
+                        "symbol": row.symbol,
+                        "side": row.side,
+                        "pnl": row.pnl,
+                        "rsi": row.rsi,
+                        "rsi_fast": row.rsi_fast,
+                        "ema_gap": (row.ema_fast or 0.0) - (row.ema_slow or 0.0),
+                        "trend_gap": (row.ema_slow or 0.0) - (row.ema_trend or 0.0),
+                        "atr": row.atr,
+                        "h4_atr": row.h4_atr,
+                        "h4_adx": row.h4_adx,
+                        "h4_regime_score": regime_score.get(row.market_regime or "", 0),
+                        "d1_bull": 1.0 if (row.d1_trend or "") == "bull" else 0.0,
+                        "volatility": row.volatility,
+                        "reward_risk_ratio": row.reward_risk_ratio,
+                        "holding_minutes": holding_minutes,
+                    }
+                )
             return pd.DataFrame(payload)
 
     def fetch_analytics_frame(self, limit: int = 5000) -> pd.DataFrame:
@@ -489,18 +494,32 @@ class MemoryLayer:
     def daily_summary(self, for_day: date) -> dict[str, Any]:
         history = self.trade_history(limit=5000)
         if history.empty:
-            return {"day": for_day.isoformat(), "trade_count": 0, "realized_pnl": 0.0, "win_rate": 0.0}
+            return {
+                "day": for_day.isoformat(),
+                "trade_count": 0,
+                "realized_pnl": 0.0,
+                "win_rate": 0.0,
+                "loss_count": 0,
+            }
 
         history["closed_day"] = pd.to_datetime(history["closed_at"]).dt.date
         day_frame = history[history["closed_day"] == for_day]
         if day_frame.empty:
-            return {"day": for_day.isoformat(), "trade_count": 0, "realized_pnl": 0.0, "win_rate": 0.0}
+            return {
+                "day": for_day.isoformat(),
+                "trade_count": 0,
+                "realized_pnl": 0.0,
+                "win_rate": 0.0,
+                "loss_count": 0,
+            }
 
         realized_pnl = float(day_frame["pnl"].fillna(0.0).sum())
         win_rate = float((day_frame["pnl"].fillna(0.0) > 0).mean())
+        loss_count = int((day_frame["pnl"].fillna(0.0) < 0).sum())
         return {
             "day": for_day.isoformat(),
             "trade_count": int(len(day_frame)),
             "realized_pnl": realized_pnl,
             "win_rate": win_rate,
+            "loss_count": loss_count,
         }

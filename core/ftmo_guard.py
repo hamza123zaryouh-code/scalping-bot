@@ -16,12 +16,13 @@ Enforces:
 All locks are stateful and persist via RuntimeState in MemoryLayer.
 Thread-safe. Designed as singleton via get_ftmo_guard().
 """
+
 from __future__ import annotations
 
 import logging
 import threading
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -32,15 +33,16 @@ _UTC = timezone.utc
 @dataclass
 class FTMOConfig:
     """All configurable FTMO rule thresholds."""
+
     start_capital: float = 160_000.0
 
     # Loss limits (absolute EUR amounts)
-    max_daily_loss: float = 6_000.0   # was €8,000 — verlaagd voor extra accountbescherming
-    max_weekly_loss: float = 10_000.0 # was €11,200 — proportioneel aangepast
+    max_daily_loss: float = 6_000.0  # was €8,000 — verlaagd voor extra accountbescherming
+    max_weekly_loss: float = 10_000.0  # was €11,200 — proportioneel aangepast
     max_total_drawdown: float = 16_000.0
 
     # Safety buffers (stop before hitting hard limits)
-    daily_buffer: float = 400.0       # stop at €5,600 daily loss (was €500 → €7,500)
+    daily_buffer: float = 400.0  # stop at €5,600 daily loss (was €500 → €7,500)
     weekly_buffer: float = 600.0
     drawdown_buffer: float = 1_000.0
 
@@ -49,21 +51,21 @@ class FTMOConfig:
     max_consecutive_losses: int = 4
 
     # Profit target (monthly — stop trading when reached, optional)
-    monthly_profit_target: float | None = None   # e.g. 10_000.0; None = disabled
+    monthly_profit_target: float | None = None  # e.g. 10_000.0; None = disabled
 
     # News guard: minutes before/after a high-impact event to block trading
     news_lock_minutes_before: int = 30
     news_lock_minutes_after: int = 20
 
     # Spread/slippage thresholds
-    max_spread_points: float = 50.0   # XAUUSD: 50 points = $5.0 spread
-    max_atr_multiplier: float = 3.0   # ATR spike above 3× normal = volatility lock
+    max_spread_points: float = 50.0  # XAUUSD: 50 points = $5.0 spread
+    max_atr_multiplier: float = 3.0  # ATR spike above 3× normal = volatility lock
 
     # Equity trailing stop (protect profits)
     # When peak equity > start + trailing_activate_profit, lock in
     # that progress by preventing equity from falling below peak - trailing_from_peak
-    equity_trailing_activate: float = 5_000.0    # activate after €5k profit
-    equity_trailing_from_peak: float = 3_000.0   # never let equity fall >€3k from peak
+    equity_trailing_activate: float = 5_000.0  # activate after €5k profit
+    equity_trailing_from_peak: float = 3_000.0  # never let equity fall >€3k from peak
 
 
 @dataclass
@@ -72,7 +74,7 @@ class LockStatus:
     reason: str
     lock_type: str
     expires_at: datetime | None = None
-    severity: str = "WARN"    # WARN | BLOCK | CRITICAL
+    severity: str = "WARN"  # WARN | BLOCK | CRITICAL
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +89,7 @@ class LockStatus:
 @dataclass
 class FTMOState:
     """Live trading session state tracked by the guard."""
+
     # Anchors (set once per period)
     day_start_equity: float = 0.0
     week_start_equity: float = 0.0
@@ -98,9 +101,9 @@ class FTMOState:
     consecutive_losses: int = 0
 
     # Watermarks
-    day_date: str = ""      # ISO date string, reset when date changes
-    week_num: str = ""      # "YYYY-Www"
-    month_str: str = ""     # "YYYY-MM"
+    day_date: str = ""  # ISO date string, reset when date changes
+    week_num: str = ""  # "YYYY-Www"
+    month_str: str = ""  # "YYYY-MM"
 
     # Lock overrides (manual / soft locks with expiry)
     news_lock_until: datetime | None = None
@@ -159,10 +162,7 @@ class FTMOGuard:
     def set_news_lock(self, lock_until: datetime) -> None:
         with self._lock:
             # Never shorten an existing lock — take the later expiry
-            if (
-                self._state.news_lock_until is not None
-                and self._state.news_lock_until > lock_until
-            ):
+            if self._state.news_lock_until is not None and self._state.news_lock_until > lock_until:
                 lock_until = self._state.news_lock_until
             self._state.news_lock_until = lock_until
             logger.warning(
@@ -214,7 +214,7 @@ class FTMOGuard:
             total_dd_pct = (total_dd / cfg.start_capital * 100) if cfg.start_capital > 0 else 0.0
 
             return {
-                "can_trade": len([l for l in locks if l.locked and l.severity in ("BLOCK", "CRITICAL")]) == 0,
+                "can_trade": not any(lock.locked and lock.severity in ("BLOCK", "CRITICAL") for lock in locks),
                 "equity": round(equity, 2),
                 "start_capital": cfg.start_capital,
                 "peak_equity": round(s.peak_equity, 2),
@@ -274,108 +274,131 @@ class FTMOGuard:
             daily_loss = max(0.0, s.day_start_equity - equity)
             hard_limit = cfg.max_daily_loss - cfg.daily_buffer
             if daily_loss >= hard_limit:
-                locks.append(LockStatus(
-                    locked=True,
-                    reason=f"Daily loss €{daily_loss:,.0f} ≥ limit €{hard_limit:,.0f} (buffer: €{cfg.daily_buffer:.0f})",
-                    lock_type="daily_loss",
-                    severity="CRITICAL",
-                ))
+                locks.append(
+                    LockStatus(
+                        locked=True,
+                        reason=(
+                            f"Daily loss €{daily_loss:,.0f} "
+                            f"≥ limit €{hard_limit:,.0f} "
+                            f"(buffer: €{cfg.daily_buffer:.0f})"
+                        ),
+                        lock_type="daily_loss",
+                        severity="CRITICAL",
+                    )
+                )
             elif daily_loss >= hard_limit * 0.8:
-                locks.append(LockStatus(
-                    locked=False,
-                    reason=f"Daily loss €{daily_loss:,.0f} approaching limit ({daily_loss / hard_limit * 100:.0f}%)",
-                    lock_type="daily_loss_warning",
-                    severity="WARN",
-                ))
+                locks.append(
+                    LockStatus(
+                        locked=False,
+                        reason=(
+                            f"Daily loss €{daily_loss:,.0f} approaching limit ({daily_loss / hard_limit * 100:.0f}%)"
+                        ),
+                        lock_type="daily_loss_warning",
+                        severity="WARN",
+                    )
+                )
 
         # 2. Weekly loss lock
         if s.week_start_equity > 0:
             weekly_loss = max(0.0, s.week_start_equity - equity)
             weekly_limit = cfg.max_weekly_loss - cfg.weekly_buffer
             if weekly_loss >= weekly_limit:
-                locks.append(LockStatus(
-                    locked=True,
-                    reason=f"Weekly loss €{weekly_loss:,.0f} ≥ limit €{weekly_limit:,.0f}",
-                    lock_type="weekly_loss",
-                    severity="CRITICAL",
-                ))
+                locks.append(
+                    LockStatus(
+                        locked=True,
+                        reason=f"Weekly loss €{weekly_loss:,.0f} ≥ limit €{weekly_limit:,.0f}",
+                        lock_type="weekly_loss",
+                        severity="CRITICAL",
+                    )
+                )
 
         # 3. Total drawdown lock (FTMO max loss rule)
         total_dd = max(0.0, cfg.start_capital - equity)
         dd_limit = cfg.max_total_drawdown - cfg.drawdown_buffer
         if total_dd >= dd_limit:
-            locks.append(LockStatus(
-                locked=True,
-                reason=f"Total drawdown €{total_dd:,.0f} ≥ FTMO limit €{dd_limit:,.0f}",
-                lock_type="max_drawdown",
-                severity="CRITICAL",
-            ))
+            locks.append(
+                LockStatus(
+                    locked=True,
+                    reason=f"Total drawdown €{total_dd:,.0f} ≥ FTMO limit €{dd_limit:,.0f}",
+                    lock_type="max_drawdown",
+                    severity="CRITICAL",
+                )
+            )
 
         # 4. Max trades per day
         if s.trades_today >= cfg.max_trades_per_day:
-            locks.append(LockStatus(
-                locked=True,
-                reason=f"Max trades reached: {s.trades_today}/{cfg.max_trades_per_day} today",
-                lock_type="max_trades_day",
-                severity="BLOCK",
-            ))
+            locks.append(
+                LockStatus(
+                    locked=True,
+                    reason=f"Max trades reached: {s.trades_today}/{cfg.max_trades_per_day} today",
+                    lock_type="max_trades_day",
+                    severity="BLOCK",
+                )
+            )
 
         # 5. Consecutive loss streak
         if s.consecutive_losses >= cfg.max_consecutive_losses:
-            locks.append(LockStatus(
-                locked=True,
-                reason=f"Consecutive losses: {s.consecutive_losses} ≥ {cfg.max_consecutive_losses} — cooling down",
-                lock_type="loss_streak",
-                severity="BLOCK",
-            ))
+            locks.append(
+                LockStatus(
+                    locked=True,
+                    reason=f"Consecutive losses: {s.consecutive_losses} ≥ {cfg.max_consecutive_losses} — cooling down",
+                    lock_type="loss_streak",
+                    severity="BLOCK",
+                )
+            )
 
         # 6. Monthly profit target (stop trading after target reached)
         if cfg.monthly_profit_target is not None and s.monthly_pnl >= cfg.monthly_profit_target:
-            locks.append(LockStatus(
-                locked=True,
-                reason=f"Monthly target €{cfg.monthly_profit_target:,.0f} achieved (P&L: €{s.monthly_pnl:,.0f})",
-                lock_type="profit_target",
-                severity="BLOCK",
-            ))
+            locks.append(
+                LockStatus(
+                    locked=True,
+                    reason=f"Monthly target €{cfg.monthly_profit_target:,.0f} achieved (P&L: €{s.monthly_pnl:,.0f})",
+                    lock_type="profit_target",
+                    severity="BLOCK",
+                )
+            )
 
         # 7. News lock
         if s.news_lock_until is not None:
             if now < s.news_lock_until:
-                locks.append(LockStatus(
-                    locked=True,
-                    reason=f"News lock active until {s.news_lock_until.strftime('%H:%M UTC')}",
-                    lock_type="news_lock",
-                    expires_at=s.news_lock_until,
-                    severity="BLOCK",
-                ))
+                locks.append(
+                    LockStatus(
+                        locked=True,
+                        reason=f"News lock active until {s.news_lock_until.strftime('%H:%M UTC')}",
+                        lock_type="news_lock",
+                        expires_at=s.news_lock_until,
+                        severity="BLOCK",
+                    )
+                )
             else:
                 s.news_lock_until = None
 
         # 8. Spread lock
         if self._current_spread > 0 and self._current_spread > cfg.max_spread_points:
-            locks.append(LockStatus(
-                locked=True,
-                reason=f"Spread {self._current_spread:.1f} pts > max {cfg.max_spread_points:.0f} pts",
-                lock_type="spread_lock",
-                severity="BLOCK",
-            ))
+            locks.append(
+                LockStatus(
+                    locked=True,
+                    reason=f"Spread {self._current_spread:.1f} pts > max {cfg.max_spread_points:.0f} pts",
+                    lock_type="spread_lock",
+                    severity="BLOCK",
+                )
+            )
 
         # 9. Equity trailing stop
-        if (
-            s.peak_equity > 0
-            and s.peak_equity > cfg.start_capital + cfg.equity_trailing_activate
-        ):
+        if s.peak_equity > 0 and s.peak_equity > cfg.start_capital + cfg.equity_trailing_activate:
             trailing_floor = s.peak_equity - cfg.equity_trailing_from_peak
             if equity < trailing_floor:
-                locks.append(LockStatus(
-                    locked=True,
-                    reason=(
-                        f"Equity €{equity:,.0f} fell below trailing floor €{trailing_floor:,.0f} "
-                        f"(peak €{s.peak_equity:,.0f}, protect €{cfg.equity_trailing_from_peak:,.0f})"
-                    ),
-                    lock_type="equity_trailing",
-                    severity="CRITICAL",
-                ))
+                locks.append(
+                    LockStatus(
+                        locked=True,
+                        reason=(
+                            f"Equity €{equity:,.0f} fell below trailing floor €{trailing_floor:,.0f} "
+                            f"(peak €{s.peak_equity:,.0f}, protect €{cfg.equity_trailing_from_peak:,.0f})"
+                        ),
+                        lock_type="equity_trailing",
+                        severity="CRITICAL",
+                    )
+                )
 
         return locks
 

@@ -2,14 +2,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 
 def _service(tmp_path):
-    from backend.services.signal_service import SignalService, STATE_PATH
+    from backend.services.signal_service import SignalService
 
     svc = SignalService.__new__(SignalService)
     svc._settings = None  # not needed for get_latest_signal

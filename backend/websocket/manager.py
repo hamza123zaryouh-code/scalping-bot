@@ -91,12 +91,13 @@ class ConnectionManager:
         self._active = [c for c in self._active if c.websocket is not ws]
         logger.info("WS disconnected (total=%d)", len(self._active))
 
-    def update_subscriptions(self, ws: WebSocket, channels: list[str]) -> None:
+    def update_subscriptions(self, ws: WebSocket, channels: list[str]) -> list[str]:
         valid = set(channels) & CHANNELS
         for conn in self._active:
             if conn.websocket is ws:
                 conn.subscriptions = valid if valid else set(CHANNELS)
-                return
+                return sorted(conn.subscriptions)
+        return []
 
     async def send_json(self, ws: WebSocket, data: Any) -> None:
         try:
@@ -216,6 +217,9 @@ class ConnectionManager:
 
     async def push_signal(self, signal: dict[str, Any]) -> None:
         await self.broadcast_event("signal.detected", signal, channel="trades")
+
+    async def push_positions(self, positions: dict[str, Any]) -> None:
+        await self.broadcast_event("positions.update", positions, channel="positions")
 
     async def push_sentiment(self, sentiment: dict[str, Any]) -> None:
         await self.broadcast_event("sentiment.update", sentiment, channel="sentiment")

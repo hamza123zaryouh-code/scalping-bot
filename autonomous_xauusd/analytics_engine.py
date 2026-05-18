@@ -45,7 +45,7 @@ def compute_report(history: pd.DataFrame, ml_history: pd.DataFrame | None = None
     max_dd = float(drawdown.max())
 
     # Monthly breakdown
-    closed["_month"] = pd.to_datetime(closed["opened_at"]).dt.to_period("M").astype(str)
+    closed["_month"] = pd.to_datetime(closed["opened_at"], utc=True).dt.tz_convert(None).dt.to_period("M").astype(str)
     monthly = (
         closed.groupby("_month")
         .apply(_group_stats, include_groups=False)
@@ -79,24 +79,23 @@ def compute_report(history: pd.DataFrame, ml_history: pd.DataFrame | None = None
     by_side: list[dict] = []
     if "side" in closed.columns:
         by_side = (
-            closed.groupby("side")
-            .apply(_group_stats, include_groups=False)
-            .reset_index()
-            .to_dict(orient="records")
+            closed.groupby("side").apply(_group_stats, include_groups=False).reset_index().to_dict(orient="records")
         )
 
     # ML snapshots
     ml_records: list[dict] = []
     if ml_history is not None and not ml_history.empty:
         for _, row in ml_history.iterrows():
-            ml_records.append({
-                "trained_at": str(row.get("trained_at", "")),
-                "accuracy": round(float(row.get("accuracy", 0)), 4),
-                "precision": round(float(row.get("precision", 0)), 4),
-                "recall": round(float(row.get("recall", 0)), 4),
-                "f1_score": round(float(row.get("f1_score", 0)), 4),
-                "sample_count": int(row.get("sample_count", 0)),
-            })
+            ml_records.append(
+                {
+                    "trained_at": str(row.get("trained_at", "")),
+                    "accuracy": round(float(row.get("accuracy", 0)), 4),
+                    "precision": round(float(row.get("precision", 0)), 4),
+                    "recall": round(float(row.get("recall", 0)), 4),
+                    "f1_score": round(float(row.get("f1_score", 0)), 4),
+                    "sample_count": int(row.get("sample_count", 0)),
+                }
+            )
 
     return AnalyticsReport(
         generated_at=datetime.now(timezone.utc),
@@ -120,10 +119,12 @@ def _group_stats(group: pd.DataFrame) -> pd.Series:
     wins = pnl[pnl > 0]
     losses = pnl[pnl < 0]
     pf = float(wins.sum() / losses.abs().sum()) if not losses.empty and losses.abs().sum() > 0 else 99.0
-    return pd.Series({
-        "trades": int(len(group)),
-        "win_rate": round(float((pnl > 0).mean()), 4),
-        "pnl": round(float(pnl.sum()), 2),
-        "avg_pnl": round(float(pnl.mean()), 2),
-        "profit_factor": round(min(pf, 99.0), 4),
-    })
+    return pd.Series(
+        {
+            "trades": int(len(group)),
+            "win_rate": round(float((pnl > 0).mean()), 4),
+            "pnl": round(float(pnl.sum()), 2),
+            "avg_pnl": round(float(pnl.mean()), 2),
+            "profit_factor": round(min(pf, 99.0), 4),
+        }
+    )

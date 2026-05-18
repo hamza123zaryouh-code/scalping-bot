@@ -10,16 +10,15 @@ Functies:
   - Historische win/loss verdeling per patroon
   - Export voor dashboard visualisatie
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import math
-from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +29,14 @@ PATTERN_FILE = MEMORY_DIR / "setup_patterns.json"
 @dataclass
 class SetupPattern:
     """Een geïdentificeerd setup patroon met statistieken."""
+
     pattern_id: str
     signal_type: str
     direction: str
     h4_regime: str
     d1_trend: str
-    rsi_range: tuple[float, float]       # (min, max)
-    session: str                          # "london" | "ny" | "overlap" | "any"
+    rsi_range: tuple[float, float]  # (min, max)
+    session: str  # "london" | "ny" | "overlap" | "any"
 
     # Statistieken
     total_trades: int = 0
@@ -98,7 +98,7 @@ class SetupPattern:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "SetupPattern":
+    def from_dict(cls, d: dict) -> SetupPattern:
         return cls(
             pattern_id=d["pattern_id"],
             signal_type=d["signal_type"],
@@ -119,10 +119,11 @@ class SetupPattern:
 @dataclass
 class PatternMatch:
     """Resultaat van een patroonzoekopdracht."""
+
     pattern: SetupPattern
-    similarity: float               # 0.0 - 1.0
-    recommendation: str             # "strong_buy" | "buy" | "neutral" | "avoid" | "block"
-    confidence_adjustment: float    # -0.3 tot +0.3 aanpassing op ML confidence
+    similarity: float  # 0.0 - 1.0
+    recommendation: str  # "strong_buy" | "buy" | "neutral" | "avoid" | "block"
+    confidence_adjustment: float  # -0.3 tot +0.3 aanpassing op ML confidence
 
 
 class PatternMemory:
@@ -142,7 +143,7 @@ class PatternMemory:
                                         d1_trend="bull", rsi14=54.0, session="london")
     """
 
-    def __init__(self, memory_dir: Optional[Path] = None):
+    def __init__(self, memory_dir: Path | None = None):
         self._patterns: dict[str, SetupPattern] = {}
         self._memory_dir = memory_dir or MEMORY_DIR
         self._memory_dir.mkdir(parents=True, exist_ok=True)
@@ -195,7 +196,9 @@ class PatternMemory:
         self._save()
         logger.debug(
             "Patroon geüpdated: %s win_rate=%.0f%% trades=%d",
-            pattern_id, pattern.win_rate * 100, pattern.total_trades,
+            pattern_id,
+            pattern.win_rate * 100,
+            pattern.total_trades,
         )
         return pattern
 
@@ -207,7 +210,7 @@ class PatternMemory:
         d1_trend: str,
         rsi14: float,
         session: str = "any",
-    ) -> Optional[PatternMatch]:
+    ) -> PatternMatch | None:
         """
         Zoek het meest vergelijkbare patroon en geef een aanbeveling.
         Retourneert None als geen patroon gevonden.
@@ -220,10 +223,7 @@ class PatternMemory:
             return self._make_match(self._patterns[pattern_id], similarity=1.0)
 
         # Fuzzy match: zelfde signal_type + direction, vergelijkbaar regime
-        candidates = [
-            p for p in self._patterns.values()
-            if p.signal_type == signal_type and p.direction == direction
-        ]
+        candidates = [p for p in self._patterns.values() if p.signal_type == signal_type and p.direction == direction]
         if not candidates:
             return None
 
@@ -237,7 +237,8 @@ class PatternMemory:
     def get_all_patterns(self, min_trades: int = 3) -> list[dict]:
         """Geeft alle patronen terug als dict lijst."""
         return [
-            p.to_dict() for p in sorted(
+            p.to_dict()
+            for p in sorted(
                 (p for p in self._patterns.values() if p.total_trades >= min_trades),
                 key=lambda p: p.quality_score,
                 reverse=True,
@@ -279,18 +280,26 @@ class PatternMemory:
 
     @staticmethod
     def _make_pattern_id(
-        signal_type: str, direction: str, h4_regime: str,
-        d1_trend: str, rsi_bucket: str, session: str,
+        signal_type: str,
+        direction: str,
+        h4_regime: str,
+        d1_trend: str,
+        rsi_bucket: str,
+        session: str,
     ) -> str:
         return f"{signal_type}_{direction}_{h4_regime}_{d1_trend}_{rsi_bucket}_{session}"
 
     @staticmethod
     def _rsi_bucket(rsi: float) -> str:
-        if rsi < 35:   return "OS"        # oversold
-        if rsi < 45:   return "LOW"
-        if rsi < 55:   return "MID"
-        if rsi < 65:   return "HIGH"
-        return "OB"                         # overbought
+        if rsi < 35:
+            return "OS"  # oversold
+        if rsi < 45:
+            return "LOW"
+        if rsi < 55:
+            return "MID"
+        if rsi < 65:
+            return "HIGH"
+        return "OB"  # overbought
 
     @staticmethod
     def _rsi_range(bucket: str) -> tuple[float, float]:
@@ -298,15 +307,24 @@ class PatternMemory:
         return ranges.get(bucket, (0, 100))
 
     def _similarity(
-        self, pattern: SetupPattern, h4_regime: str,
-        d1_trend: str, rsi_bucket: str, session: str,
+        self,
+        pattern: SetupPattern,
+        h4_regime: str,
+        d1_trend: str,
+        rsi_bucket: str,
+        session: str,
     ) -> float:
         score = 0.0
-        if pattern.h4_regime == h4_regime:     score += 0.35
-        elif self._regime_compatible(pattern.h4_regime, h4_regime): score += 0.15
-        if pattern.d1_trend == d1_trend:       score += 0.25
-        if pattern.rsi_range == self._rsi_range(rsi_bucket): score += 0.25
-        if pattern.session == session or pattern.session == "any": score += 0.15
+        if pattern.h4_regime == h4_regime:
+            score += 0.35
+        elif self._regime_compatible(pattern.h4_regime, h4_regime):
+            score += 0.15
+        if pattern.d1_trend == d1_trend:
+            score += 0.25
+        if pattern.rsi_range == self._rsi_range(rsi_bucket):
+            score += 0.25
+        if pattern.session == session or pattern.session == "any":
+            score += 0.15
         return round(min(1.0, score), 3)
 
     @staticmethod
@@ -345,10 +363,7 @@ class PatternMemory:
             return
         try:
             data = json.loads(self._pattern_file.read_text(encoding="utf-8"))
-            self._patterns = {
-                pid: SetupPattern.from_dict(p)
-                for pid, p in data.get("patterns", {}).items()
-            }
+            self._patterns = {pid: SetupPattern.from_dict(p) for pid, p in data.get("patterns", {}).items()}
             logger.debug("PatternMemory: %d patronen geladen", len(self._patterns))
         except Exception as exc:
             logger.warning("PatternMemory: laden mislukt: %s", exc)

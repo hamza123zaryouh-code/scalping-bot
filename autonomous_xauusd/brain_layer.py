@@ -9,6 +9,7 @@ Verbeterd van V16 naar V17:
   - Betere parameter override logica
   - Pattern clustering voor setup kwaliteit
 """
+
 from __future__ import annotations
 
 import logging
@@ -16,7 +17,6 @@ import math
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 import joblib
 import numpy as np
@@ -26,7 +26,8 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
-from core.strategy_engine import StrategyEngine, SignalResult, get_engine
+from core.strategy_engine import SignalResult, StrategyEngine, get_engine
+
 from .models import SentimentScore, SignalDecision, StrategyParameters, TrainingOutcome
 
 logger = logging.getLogger(__name__)
@@ -86,13 +87,9 @@ def derive_parameter_overrides(
         if not winner_rr.empty:
             median_rr = float(winner_rr.median())
             if accuracy >= 0.57 and median_rr >= 2.0:
-                overrides["take_profit_atr"] = float(
-                    np.clip(current_parameters.take_profit_atr + 0.2, 2.0, 4.5)
-                )
+                overrides["take_profit_atr"] = float(np.clip(current_parameters.take_profit_atr + 0.2, 2.0, 4.5))
             elif accuracy < 0.50:
-                overrides["take_profit_atr"] = float(
-                    np.clip(current_parameters.take_profit_atr - 0.2, 2.0, 3.5)
-                )
+                overrides["take_profit_atr"] = float(np.clip(current_parameters.take_profit_atr - 0.2, 2.0, 3.5))
 
         # Beste signaaltype identificeren
         if "signal_type" in winners.columns:
@@ -109,9 +106,7 @@ def derive_parameter_overrides(
             np.clip(current_parameters.risk_weak_regime * 0.80, 0.003, current_parameters.risk_weak_regime)
         )
     elif accuracy >= 0.60:
-        overrides["risk_strong_regime"] = float(
-            np.clip(current_parameters.risk_strong_regime * 1.05, 0.005, 0.020)
-        )
+        overrides["risk_strong_regime"] = float(np.clip(current_parameters.risk_strong_regime * 1.05, 0.005, 0.020))
 
     return overrides
 
@@ -132,7 +127,7 @@ class IntelligenceLayer:
         self.artifact_path = artifact_path
         self._strategy_engine: StrategyEngine = get_engine()
         self._ml_model = None
-        self._ml_scaler: Optional[StandardScaler] = None
+        self._ml_scaler: StandardScaler | None = None
         self._ml_features: list[str] = []
         self._ml_confidence: float = 0.5  # Default confidence
         self._load_existing_model()
@@ -149,7 +144,8 @@ class IntelligenceLayer:
                 self._ml_confidence = float(metrics.get("accuracy", 0.5))
                 logger.info(
                     "ML model geladen: accuracy=%.1f%%, features=%d",
-                    self._ml_confidence * 100, len(self._ml_features),
+                    self._ml_confidence * 100,
+                    len(self._ml_features),
                 )
             except Exception as e:
                 logger.warning("ML model laden mislukt: %s", e)
@@ -230,7 +226,7 @@ class IntelligenceLayer:
         ml_conf = self._get_ml_confidence(frame)
 
         # Signaal genereren via unified engine
-        signal: Optional[SignalResult] = self._strategy_engine.generate_signal(
+        signal: SignalResult | None = self._strategy_engine.generate_signal(
             frame,
             cfg=cfg,
             sentiment_score=sent_score,
@@ -243,9 +239,6 @@ class IntelligenceLayer:
             return None
 
         # Vertaal naar SignalDecision (backward compatible met autonomous engine)
-        bar = frame.iloc[-2]
-        close = float(bar["close"]) if not math.isnan(float(bar.get("close", 0))) else signal.entry_price
-
         return SignalDecision(
             symbol=symbol,
             timeframe=timeframe,
@@ -283,11 +276,11 @@ class IntelligenceLayer:
                 val = bar.get(col, 0.0)
                 feature_values.append(float(val) if not math.isnan(float(val or 0)) else 0.0)
 
-            X = np.array(feature_values).reshape(1, -1)
+            features_array = np.array(feature_values).reshape(1, -1)
             if self._ml_scaler:
-                X = self._ml_scaler.transform(X)
+                features_array = self._ml_scaler.transform(features_array)
 
-            proba = self._ml_model.predict_proba(X)[0]
+            proba = self._ml_model.predict_proba(features_array)[0]
             return float(max(proba))  # Confidence = max klasse probabiliteit
         except Exception as e:
             logger.debug("ML confidence berekening mislukt: %s", e)
@@ -332,33 +325,42 @@ class IntelligenceLayer:
         if frame["label"].nunique() < 2 or len(frame) < 50:
             return None
 
-        X = frame[available]
+        features_frame = frame[available]
         y = frame["label"]
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.25, random_state=42, stratify=y,
+        features_train, features_test, y_train, y_test = train_test_split(
+            features_frame,
+            y,
+            test_size=0.25,
+            random_state=42,
+            stratify=y,
         )
 
         # Normalisatie
         scaler = StandardScaler()
-        X_train_s = scaler.fit_transform(X_train)
-        X_test_s = scaler.transform(X_test)
+        features_train_scaled = scaler.fit_transform(features_train)
+        features_test_scaled = scaler.transform(features_test)
 
         # Twee modellen — kies het beste
         rf = RandomForestClassifier(
-            n_estimators=250, max_depth=6,
-            min_samples_leaf=2, class_weight="balanced", random_state=42,
+            n_estimators=250,
+            max_depth=6,
+            min_samples_leaf=2,
+            class_weight="balanced",
+            random_state=42,
         )
         gb = GradientBoostingClassifier(
-            n_estimators=150, max_depth=4,
-            learning_rate=0.05, random_state=42,
+            n_estimators=150,
+            max_depth=4,
+            learning_rate=0.05,
+            random_state=42,
         )
 
-        rf.fit(X_train_s, y_train)
-        gb.fit(X_train_s, y_train)
+        rf.fit(features_train_scaled, y_train)
+        gb.fit(features_train_scaled, y_train)
 
-        rf_acc = accuracy_score(y_test, rf.predict(X_test_s))
-        gb_acc = accuracy_score(y_test, gb.predict(X_test_s))
+        rf_acc = accuracy_score(y_test, rf.predict(features_test_scaled))
+        gb_acc = accuracy_score(y_test, gb.predict(features_test_scaled))
 
         if gb_acc > rf_acc:
             best_model = gb
@@ -367,7 +369,7 @@ class IntelligenceLayer:
             best_model = rf
             model_name = "RandomForest"
 
-        preds = best_model.predict(X_test_s)
+        preds = best_model.predict(features_test_scaled)
         accuracy = float(accuracy_score(y_test, preds))
         precision = float(precision_score(y_test, preds, zero_division=0))
         recall = float(recall_score(y_test, preds, zero_division=0))
@@ -375,10 +377,7 @@ class IntelligenceLayer:
 
         # Feature importances
         if hasattr(best_model, "feature_importances_"):
-            importances = {
-                name: float(score)
-                for name, score in zip(available, best_model.feature_importances_)
-            }
+            importances = {name: float(score) for name, score in zip(available, best_model.feature_importances_)}
         else:
             importances = {name: 1.0 / len(available) for name in available}
 
@@ -398,8 +397,10 @@ class IntelligenceLayer:
                 "model": best_model,
                 "scaler": scaler,
                 "metrics": {
-                    "accuracy": accuracy, "precision": precision,
-                    "recall": recall, "f1_score": f1,
+                    "accuracy": accuracy,
+                    "precision": precision,
+                    "recall": recall,
+                    "f1_score": f1,
                 },
                 "feature_importances": importances,
                 "parameter_overrides": overrides,
@@ -409,7 +410,10 @@ class IntelligenceLayer:
 
         logger.info(
             "ML model getraind (%s): accuracy=%.1f%%, precision=%.1f%%, recall=%.1f%%",
-            model_name, accuracy * 100, precision * 100, recall * 100,
+            model_name,
+            accuracy * 100,
+            precision * 100,
+            recall * 100,
         )
 
         return TrainingOutcome(
@@ -436,9 +440,12 @@ class IntelligenceLayer:
         priority_score = signal.priority / 6.0 * 4.0  # Max 4 punten
 
         regime_scores = {
-            "STERK_BULL": 3.0, "STERK_BEAR": 3.0,
-            "BULL": 2.0, "BEAR": 2.0,
-            "ZWAK_BULL": 1.0, "ZWAK_BEAR": 1.0,
+            "STERK_BULL": 3.0,
+            "STERK_BEAR": 3.0,
+            "BULL": 2.0,
+            "BEAR": 2.0,
+            "ZWAK_BULL": 1.0,
+            "ZWAK_BEAR": 1.0,
             "CHOPPY": 0.0,
         }
         regime_score = regime_scores.get(signal.h4_regime, 0.0)  # Max 3 punten

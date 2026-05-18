@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -406,7 +406,7 @@ class NewsGuard:
         today = now.date()
 
         # First Friday of month = NFP day
-        year, month = today.year, today.month
+        month = today.month
         first_day = today.replace(day=1)
         days_to_friday = (4 - first_day.weekday()) % 7
         nfp_day = first_day + timedelta(days=days_to_friday)

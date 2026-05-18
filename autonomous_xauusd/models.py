@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
-from typing import Any, List
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -30,13 +30,13 @@ class StrategyParameters:
         return asdict(self)
 
     @classmethod
-    def from_record(cls, payload: dict[str, Any] | None) -> "StrategyParameters":
+    def from_record(cls, payload: dict[str, Any] | None) -> StrategyParameters:
         if not payload:
             return cls()
         supported = {key: value for key, value in payload.items() if key in cls.__dataclass_fields__}
         return cls(**supported)
 
-    def with_overrides(self, overrides: dict[str, Any] | None) -> "StrategyParameters":
+    def with_overrides(self, overrides: dict[str, Any] | None) -> StrategyParameters:
         if not overrides:
             return self
         supported = {key: value for key, value in overrides.items() if key in self.__dataclass_fields__}
@@ -92,7 +92,7 @@ class SentimentScore:
     score: float
     label: str
     headline_count: int
-    sources: List[str] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)
     fetched_at: datetime = field(default_factory=datetime.utcnow)
 
 
@@ -106,11 +106,11 @@ class AnalyticsReport:
     avg_rr: float
     total_pnl: float
     max_drawdown: float
-    monthly: List[dict]
-    by_regime: List[dict]
-    by_session: List[dict]
-    by_side: List[dict]
-    ml_snapshots: List[dict] = field(default_factory=list)
+    monthly: list[dict]
+    by_regime: list[dict]
+    by_session: list[dict]
+    by_side: list[dict]
+    ml_snapshots: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {

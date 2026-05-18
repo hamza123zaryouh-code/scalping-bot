@@ -17,6 +17,7 @@ Gedrag:
   - Cache: events worden maximaal 1x per dag opgehaald
   - Graceful fallback bij API failure (geen blokkade bij onzekerheid)
 """
+
 from __future__ import annotations
 
 import json
@@ -26,7 +27,6 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -44,51 +44,71 @@ CACHE_MAX_AGE_HOURS = 6
 
 # Hardcoded keyword filters for high-impact USD events
 HIGH_IMPACT_KEYWORDS = [
-    "fomc", "federal open market", "fed rate", "interest rate decision",
-    "nfp", "non-farm payroll", "nonfarm payroll",
-    "cpi", "consumer price index",
-    "pce", "personal consumption",
-    "ppi", "producer price",
-    "powell", "fed chair", "federal reserve",
-    "gdp", "gross domestic product",
-    "unemployment rate", "jobless claims",
-    "ism manufacturing", "ism services",
-    "retail sales", "core retail",
+    "fomc",
+    "federal open market",
+    "fed rate",
+    "interest rate decision",
+    "nfp",
+    "non-farm payroll",
+    "nonfarm payroll",
+    "cpi",
+    "consumer price index",
+    "pce",
+    "personal consumption",
+    "ppi",
+    "producer price",
+    "powell",
+    "fed chair",
+    "federal reserve",
+    "gdp",
+    "gross domestic product",
+    "unemployment rate",
+    "jobless claims",
+    "ism manufacturing",
+    "ism services",
+    "retail sales",
+    "core retail",
     "jackson hole",
 ]
 
 MEDIUM_IMPACT_KEYWORDS = [
-    "aud", "gbp", "eur", "jpy", "cad", "chf",
-    "ecb", "boe", "boj", "rba", "bank of england",
-    "uk cpi", "eu cpi", "eurozone",
+    "aud",
+    "gbp",
+    "eur",
+    "jpy",
+    "cad",
+    "chf",
+    "ecb",
+    "boe",
+    "boj",
+    "rba",
+    "bank of england",
+    "uk cpi",
+    "eu cpi",
+    "eurozone",
 ]
 
 
 @dataclass
 class EconomicEvent:
     """Een enkel economisch event."""
+
     name: str
-    event_time: datetime          # UTC
-    impact: str                   # "high" | "medium" | "low"
-    currency: str                 # "USD" | "EUR" etc.
+    event_time: datetime  # UTC
+    impact: str  # "high" | "medium" | "low"
+    currency: str  # "USD" | "EUR" etc.
     source: str = "manual"
     description: str = ""
 
     @property
     def is_gold_relevant(self) -> bool:
         name_lower = self.name.lower()
-        return (
-            self.currency == "USD" or
-            any(kw in name_lower for kw in ["gold", "xau", "silver", "commodit"])
-        )
+        return self.currency == "USD" or any(kw in name_lower for kw in ["gold", "xau", "silver", "commodit"])
 
     @property
     def is_high_impact(self) -> bool:
         name_lower = self.name.lower()
-        return (
-            self.impact == "high" or
-            any(kw in name_lower for kw in HIGH_IMPACT_KEYWORDS)
-        )
+        return self.impact == "high" or any(kw in name_lower for kw in HIGH_IMPACT_KEYWORDS)
 
     def to_dict(self) -> dict:
         return {
@@ -101,7 +121,7 @@ class EconomicEvent:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "EconomicEvent":
+    def from_dict(cls, d: dict) -> EconomicEvent:
         return cls(
             name=d["name"],
             event_time=datetime.fromisoformat(d["event_time"]),
@@ -115,6 +135,7 @@ class EconomicEvent:
 @dataclass
 class EventWindow:
     """Actief event blokkeringsvenster."""
+
     event: EconomicEvent
     block_from: datetime
     block_until: datetime
@@ -132,13 +153,14 @@ class EventWindow:
 @dataclass
 class CalendarStatus:
     """Status van de event kalender op dit moment."""
+
     is_blocked: bool
-    block_reason: Optional[str]
-    active_event: Optional[EconomicEvent]
-    next_event: Optional[EconomicEvent]
-    minutes_until_next_block: Optional[float]
-    minutes_until_unblock: Optional[float]
-    risk_level: str                          # "clear" | "warning" | "blocked"
+    block_reason: str | None
+    active_event: EconomicEvent | None
+    next_event: EconomicEvent | None
+    minutes_until_next_block: float | None
+    minutes_until_unblock: float | None
+    risk_level: str  # "clear" | "warning" | "blocked"
     upcoming_events: list[EconomicEvent] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -147,8 +169,12 @@ class CalendarStatus:
             "block_reason": self.block_reason,
             "active_event": self.active_event.to_dict() if self.active_event else None,
             "next_event": self.next_event.to_dict() if self.next_event else None,
-            "minutes_until_next_block": round(self.minutes_until_next_block, 1) if self.minutes_until_next_block is not None else None,
-            "minutes_until_unblock": round(self.minutes_until_unblock, 1) if self.minutes_until_unblock is not None else None,
+            "minutes_until_next_block": round(self.minutes_until_next_block, 1)
+            if self.minutes_until_next_block is not None
+            else None,
+            "minutes_until_unblock": round(self.minutes_until_unblock, 1)
+            if self.minutes_until_unblock is not None
+            else None,
             "risk_level": self.risk_level,
             "upcoming_events": [e.to_dict() for e in self.upcoming_events[:5]],
         }
@@ -186,11 +212,11 @@ class EventCalendar:
     # PUBLIC API
     # ─────────────────────────────────────────────────────────────
 
-    def can_trade(self, now: Optional[datetime] = None) -> bool:
+    def can_trade(self, now: datetime | None = None) -> bool:
         """True als trading niet geblokkeerd is door een event."""
         return not self.get_status(now).is_blocked
 
-    def get_status(self, now: Optional[datetime] = None) -> CalendarStatus:
+    def get_status(self, now: datetime | None = None) -> CalendarStatus:
         """Volledige status van de event kalender."""
         if now is None:
             now = datetime.now(timezone.utc)
@@ -202,7 +228,7 @@ class EventCalendar:
         windows = [self._make_window(e) for e in events]
 
         # Check actieve blokkade
-        active_window: Optional[EventWindow] = None
+        active_window: EventWindow | None = None
         for window in windows:
             if window.block_from <= now <= window.block_until:
                 active_window = window
@@ -221,7 +247,7 @@ class EventCalendar:
             )
 
         # Geen actieve blokkade — check aankomende events
-        next_window: Optional[EventWindow] = None
+        next_window: EventWindow | None = None
         for window in sorted(windows, key=lambda w: w.block_from):
             if window.block_from > now:
                 next_window = window
@@ -317,7 +343,7 @@ class EventCalendar:
             is_active=block_from <= now <= block_until,
         )
 
-    def _next_event(self, now: datetime, skip: Optional[EconomicEvent] = None) -> Optional[EconomicEvent]:
+    def _next_event(self, now: datetime, skip: EconomicEvent | None = None) -> EconomicEvent | None:
         events = [e for e in self._get_relevant_events() if e.event_time > now]
         if skip:
             events = [e for e in events if e.name != skip.name]
@@ -338,51 +364,59 @@ class EventCalendar:
         for m in range(max(1, month - 1), min(13, month + 3)):
             nfp_day = self._first_weekday_of_month(year, m, weekday=4)  # vrijdag
             if nfp_day:
-                hardcoded.append(EconomicEvent(
-                    name="NFP Non-Farm Payrolls",
-                    event_time=datetime(year, m, nfp_day, 13, 30, tzinfo=timezone.utc),
-                    impact="high",
-                    currency="USD",
-                    source="hardcoded",
-                    description="Maandelijks werkgelegenheidsrapport — hoogste impact op goud",
-                ))
+                hardcoded.append(
+                    EconomicEvent(
+                        name="NFP Non-Farm Payrolls",
+                        event_time=datetime(year, m, nfp_day, 13, 30, tzinfo=timezone.utc),
+                        impact="high",
+                        currency="USD",
+                        source="hardcoded",
+                        description="Maandelijks werkgelegenheidsrapport — hoogste impact op goud",
+                    )
+                )
 
         # CPI: ca. de 10e-15e van elke maand, 13:30 UTC (hardcoded midden)
         for m in range(max(1, month - 1), min(13, month + 3)):
-            hardcoded.append(EconomicEvent(
-                name="CPI Consumer Price Index",
-                event_time=datetime(year, m, 12, 13, 30, tzinfo=timezone.utc),
-                impact="high",
-                currency="USD",
-                source="hardcoded",
-                description="Inflatie indicator — grote impact op Fed beleid en goud",
-            ))
+            hardcoded.append(
+                EconomicEvent(
+                    name="CPI Consumer Price Index",
+                    event_time=datetime(year, m, 12, 13, 30, tzinfo=timezone.utc),
+                    impact="high",
+                    currency="USD",
+                    source="hardcoded",
+                    description="Inflatie indicator — grote impact op Fed beleid en goud",
+                )
+            )
 
         # FOMC: 8x per jaar (quarterly + extra); approximate planning
         fomc_months = [1, 3, 5, 6, 7, 9, 11, 12]
         for m in fomc_months:
             if abs(m - month) <= 2:
-                hardcoded.append(EconomicEvent(
-                    name="FOMC Interest Rate Decision",
-                    event_time=datetime(year, m, 20, 19, 0, tzinfo=timezone.utc),
-                    impact="high",
-                    currency="USD",
-                    source="hardcoded",
-                    description="Federal Reserve rentebesluit — maximale impact op goud",
-                ))
+                hardcoded.append(
+                    EconomicEvent(
+                        name="FOMC Interest Rate Decision",
+                        event_time=datetime(year, m, 20, 19, 0, tzinfo=timezone.utc),
+                        impact="high",
+                        currency="USD",
+                        source="hardcoded",
+                        description="Federal Reserve rentebesluit — maximale impact op goud",
+                    )
+                )
 
         # PCE: laatste vrijdag van elke maand
         for m in range(max(1, month - 1), min(13, month + 3)):
             pce_day = self._last_weekday_of_month(year, m, weekday=4)
             if pce_day:
-                hardcoded.append(EconomicEvent(
-                    name="PCE Core Inflation",
-                    event_time=datetime(year, m, pce_day, 13, 30, tzinfo=timezone.utc),
-                    impact="high",
-                    currency="USD",
-                    source="hardcoded",
-                    description="Fed's favoriete inflatiemaat — rechtstreeks effect op goud",
-                ))
+                hardcoded.append(
+                    EconomicEvent(
+                        name="PCE Core Inflation",
+                        event_time=datetime(year, m, pce_day, 13, 30, tzinfo=timezone.utc),
+                        impact="high",
+                        currency="USD",
+                        source="hardcoded",
+                        description="Fed's favoriete inflatiemaat — rechtstreeks effect op goud",
+                    )
+                )
 
         self._events.extend(hardcoded)
         logger.debug("Hardcoded events geladen: %d events", len(hardcoded))
@@ -431,12 +465,8 @@ class EventCalendar:
                 "X-Requested-With": "XMLHttpRequest",
             }
 
-            now = datetime.now(timezone.utc)
-            from_date = now.strftime("%Y-%m-%d")
-            to_date = (now + timedelta(days=7)).strftime("%Y-%m-%d")
-
             # ForexFactory XML feed (publiek beschikbaar)
-            url = f"https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+            url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
             resp = requests.get(url, headers=headers, timeout=10)
 
             if resp.status_code != 200:
@@ -502,10 +532,11 @@ class EventCalendar:
         return False
 
     @staticmethod
-    def _first_weekday_of_month(year: int, month: int, weekday: int) -> Optional[int]:
+    def _first_weekday_of_month(year: int, month: int, weekday: int) -> int | None:
         """Geeft de dag van de eerste occurrence van 'weekday' in de maand (0=Mon, 4=Fri)."""
         try:
             from calendar import monthrange
+
             first_day_wd = datetime(year, month, 1).weekday()
             diff = (weekday - first_day_wd) % 7
             day = 1 + diff
@@ -515,10 +546,11 @@ class EventCalendar:
             return None
 
     @staticmethod
-    def _last_weekday_of_month(year: int, month: int, weekday: int) -> Optional[int]:
+    def _last_weekday_of_month(year: int, month: int, weekday: int) -> int | None:
         """Geeft de dag van de laatste occurrence van 'weekday' in de maand."""
         try:
             from calendar import monthrange
+
             _, days_in_month = monthrange(year, month)
             last_day = datetime(year, month, days_in_month)
             diff = (last_day.weekday() - weekday) % 7
@@ -532,7 +564,7 @@ class EventCalendar:
 # SINGLETON
 # ─────────────────────────────────────────────────────────────────
 
-_calendar_instance: Optional[EventCalendar] = None
+_calendar_instance: EventCalendar | None = None
 
 
 def get_calendar() -> EventCalendar:

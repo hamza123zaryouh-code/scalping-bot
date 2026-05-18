@@ -17,8 +17,8 @@ sys.path.insert(0, str(ROOT))
 @pytest.fixture(autouse=True)
 def configured_test_environment(monkeypatch, tmp_path):
     from autonomous_xauusd.settings import load_settings
-    from backend.core.config import get_settings
     from backend.api.routes import telegram as telegram_route
+    from backend.core.config import get_settings
     from backend.core.security import hash_password
     from backend.services.telegram_service import TelegramService
 

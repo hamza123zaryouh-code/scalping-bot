@@ -15,13 +15,13 @@ komen uitsluitend uit deze module.
 
 Multi-TF: H1 indicators + H4 regime + D1 trend
 """
+
 from __future__ import annotations
 
 import math
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -31,25 +31,25 @@ import pandas as pd
 # ─────────────────────────────────────────────────────────────────
 
 DEFAULT_CFG: dict = {
-    "risk_a": 0.0120,       # EMA cross — sterkste signaal
-    "risk_b": 0.0090,       # MACD cross / BOS / Momentum
-    "risk_c": 0.0075,       # Pullback / MSS
-    "adx_min": 10,          # Minimale ADX H1
-    "h4adx_min": 14,        # Minimale ADX H4
-    "vol_mult": 1.00,       # Volume multiplier filter
-    "tp1_r": 1.5,           # TP1 reward ratio
-    "tp2_r": 3.0,           # TP2 reward ratio
-    "tp3_r": 5.0,           # TP3 reward ratio
-    "tp1_pct": 0.30,        # Fractie positie bij TP1
-    "tp2_pct": 0.30,        # Fractie positie bij TP2
-    "sl_atr": 1.5,          # SL ATR multiplier
-    "sl_max": 2.0,          # Max SL ATR multiplier
-    "max_dag": 10,          # Max trades per dag
-    "sl_dag_max": 3,        # Max SL's per dag
-    "cooldown_h": 1,        # Cooldown uren tussen trades
-    "trailing": True,       # Trailing stop na TP1
-    "breakeven_r": 0.8,     # Breakeven stop na 0.8R winst
-    "kz_mult": 1.25,        # Risico multiplier tijdens kill zones
+    "risk_a": 0.0120,  # EMA cross — sterkste signaal
+    "risk_b": 0.0090,  # MACD cross / BOS / Momentum
+    "risk_c": 0.0075,  # Pullback / MSS
+    "adx_min": 10,  # Minimale ADX H1
+    "h4adx_min": 14,  # Minimale ADX H4
+    "vol_mult": 1.00,  # Volume multiplier filter
+    "tp1_r": 1.5,  # TP1 reward ratio
+    "tp2_r": 3.0,  # TP2 reward ratio
+    "tp3_r": 5.0,  # TP3 reward ratio
+    "tp1_pct": 0.30,  # Fractie positie bij TP1
+    "tp2_pct": 0.30,  # Fractie positie bij TP2
+    "sl_atr": 1.5,  # SL ATR multiplier
+    "sl_max": 2.0,  # Max SL ATR multiplier
+    "max_dag": 10,  # Max trades per dag
+    "sl_dag_max": 3,  # Max SL's per dag
+    "cooldown_h": 1,  # Cooldown uren tussen trades
+    "trailing": True,  # Trailing stop na TP1
+    "breakeven_r": 0.8,  # Breakeven stop na 0.8R winst
+    "kz_mult": 1.25,  # Risico multiplier tijdens kill zones
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -60,36 +60,36 @@ DEFAULT_CFG: dict = {
 
 V18_CFG: dict = {
     # ── Risico per signaaltype (FTMO-safe op €160k) ────────────────
-    "risk_a": 0.0150,       # EMA cross — 1.5% | KZ: 1.875% met kz_mult
-    "risk_b": 0.0120,       # MACD/BOS/Momentum — 1.2%
-    "risk_c": 0.0100,       # Pullback/MSS — 1.0%
+    "risk_a": 0.0150,  # EMA cross — 1.5% | KZ: 1.875% met kz_mult
+    "risk_b": 0.0120,  # MACD/BOS/Momentum — 1.2%
+    "risk_c": 0.0100,  # Pullback/MSS — 1.0%
     # ── Signaalfilters ─────────────────────────────────────────────
-    "adx_min": 9,           # Minimale ADX H1
-    "h4adx_min": 12,        # Minimale ADX H4
-    "vol_mult": 1.00,       # Volume filter
+    "adx_min": 9,  # Minimale ADX H1
+    "h4adx_min": 12,  # Minimale ADX H4
+    "vol_mult": 1.00,  # Volume filter
     # ── Take profit niveaus ────────────────────────────────────────
-    "tp1_r": 1.5,           # TP1 reward ratio
-    "tp2_r": 3.5,           # TP2 reward ratio
-    "tp3_r": 6.5,           # TP3 reward ratio (grote runners)
-    "tp1_pct": 0.25,        # 25% uitstappen bij TP1
-    "tp2_pct": 0.30,        # 30% bij TP2
+    "tp1_r": 1.5,  # TP1 reward ratio
+    "tp2_r": 3.5,  # TP2 reward ratio
+    "tp3_r": 6.5,  # TP3 reward ratio (grote runners)
+    "tp1_pct": 0.25,  # 25% uitstappen bij TP1
+    "tp2_pct": 0.30,  # 30% bij TP2
     # ── Stop loss ─────────────────────────────────────────────────
-    "sl_atr": 1.5,          # SL ATR multiplier
-    "sl_max": 2.0,          # Max SL ATR multiplier
+    "sl_atr": 1.5,  # SL ATR multiplier
+    "sl_max": 2.0,  # Max SL ATR multiplier
     # ── Trade frequentie ──────────────────────────────────────────
-    "max_dag": 10,          # Max trades per dag
-    "sl_dag_max": 3,        # Max SL's per dag
-    "cooldown_h": 0.5,      # Cooldown 30 min
+    "max_dag": 10,  # Max trades per dag
+    "sl_dag_max": 3,  # Max SL's per dag
+    "cooldown_h": 0.5,  # Cooldown 30 min
     # ── Trailing / breakeven ──────────────────────────────────────
-    "trailing": True,       # Trailing stop actief
-    "breakeven_r": 0.7,     # Breakeven na 0.7R winst
+    "trailing": True,  # Trailing stop actief
+    "breakeven_r": 0.7,  # Breakeven na 0.7R winst
     # ── Kill zone boost ────────────────────────────────────────────
-    "kz_mult": 1.25,        # Kill zone boost +25% — London/NY open premium
+    "kz_mult": 1.25,  # Kill zone boost +25% — London/NY open premium
     # ── Compound systeem ──────────────────────────────────────────
-    "weekly_compound": True,    # Wekelijkse compound herberekening
-    "compound_boost": 1.08,     # +8% risico-budget na elke winstgevende week
+    "weekly_compound": True,  # Wekelijkse compound herberekening
+    "compound_boost": 1.08,  # +8% risico-budget na elke winstgevende week
     # ── FTMO limieten ─────────────────────────────────────────────
-    "max_lot_size": 4.0,            # Harde lot cap
+    "max_lot_size": 4.0,  # Harde lot cap
     "max_daily_loss_eur": 6_000.0,  # Dagelijkse verliesgrens €6k
 }
 
@@ -101,14 +101,14 @@ V18_CFG: dict = {
 V19_CFG: dict = {
     **V18_CFG,
     # ── Betere risk/reward (grotere winnaars, sneller breakeven) ──
-    "tp3_r": 7.0,              # grotere runners lopen langer
-    "tp1_pct": 0.20,           # minder sluiten bij TP1, meer laten lopen
-    "breakeven_r": 0.65,       # sneller breakeven na 0.65R winst
-    "compound_decay": 0.85,    # compound verlagen na verliesweek
+    "tp3_r": 7.0,  # grotere runners lopen langer
+    "tp1_pct": 0.20,  # minder sluiten bij TP1, meer laten lopen
+    "breakeven_r": 0.65,  # sneller breakeven na 0.65R winst
+    "compound_decay": 0.85,  # compound verlagen na verliesweek
     # ── Verliesweek-bescherming ────────────────────────────────────
-    "weekly_loss_threshold": 0.015,   # -1.5% deze week → risico verlagen
-    "weekly_loss_risk_scale": 0.55,   # risico → 55% bij verliesweek
-    "loss_day_filter": True,          # na 2 verlies-dagen: alleen A/B/F signalen
+    "weekly_loss_threshold": 0.015,  # -1.5% deze week → risico verlagen
+    "weekly_loss_risk_scale": 0.55,  # risico → 55% bij verliesweek
+    "loss_day_filter": True,  # na 2 verlies-dagen: alleen A/B/F signalen
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -119,9 +119,9 @@ V20_CFG: dict = {
     **V19_CFG,
     # ── Maandelijks winstdoel ──────────────────────────────────────
     "monthly_profit_target": 40_000.0,
-    "monthly_min_target":    20_000.0,
+    "monthly_min_target": 20_000.0,
     # ── 3-weken reset systeem ─────────────────────────────────────
-    "reset_weeks":   3,
+    "reset_weeks": 3,
     "reset_capital": 160_000.0,
 }
 
@@ -140,11 +140,12 @@ SIGNAL_PRIORITY: dict[str, int] = {
 # DATA CLASSES
 # ─────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class SignalResult:
-    direction: str          # "long" | "short"
-    signal_type: str        # A_EMACROSS | B_MACDCROSS | C_MOMENTUM | D_PULLBACK | E_BOS | F_MSS
-    risk_pct: float         # Risicopercentage van kapitaal
+    direction: str  # "long" | "short"
+    signal_type: str  # A_EMACROSS | B_MACDCROSS | C_MOMENTUM | D_PULLBACK | E_BOS | F_MSS
+    risk_pct: float  # Risicopercentage van kapitaal
     tp1_r: float
     tp2_r: float
     tp3_r: float
@@ -163,13 +164,14 @@ class SignalResult:
     sentiment_label: str = "neutral"
     confidence: float = 0.0
     reason: str = ""
-    timestamp: Optional[datetime] = None
+    timestamp: datetime | None = None
     features: dict = field(default_factory=dict)
 
 
 @dataclass
 class BarFeatures:
     """Volledig verrijkte bar met alle indicatoren."""
+
     timestamp: datetime
     open: float
     high: float
@@ -214,6 +216,7 @@ class BarFeatures:
 # INDICATOR FUNCTIES (puur, geen side-effects)
 # ─────────────────────────────────────────────────────────────────
 
+
 def _ema(s: pd.Series, n: int) -> pd.Series:
     return s.ewm(span=n, adjust=False).mean()
 
@@ -221,16 +224,19 @@ def _ema(s: pd.Series, n: int) -> pd.Series:
 def _rsi(close: pd.Series, p: int = 14) -> pd.Series:
     d = close.diff()
     g = d.clip(lower=0).ewm(com=p - 1, adjust=False).mean()
-    l = (-d).clip(lower=0).ewm(com=p - 1, adjust=False).mean()
-    return 100 - 100 / (1 + g / l.replace(0, 1e-10))
+    losses = (-d).clip(lower=0).ewm(com=p - 1, adjust=False).mean()
+    return 100 - 100 / (1 + g / losses.replace(0, 1e-10))
 
 
 def _atr(hi: pd.Series, lo: pd.Series, cl: pd.Series, p: int = 14) -> pd.Series:
-    tr = pd.concat([
-        hi - lo,
-        (hi - cl.shift(1)).abs(),
-        (lo - cl.shift(1)).abs(),
-    ], axis=1).max(axis=1)
+    tr = pd.concat(
+        [
+            hi - lo,
+            (hi - cl.shift(1)).abs(),
+            (lo - cl.shift(1)).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
     return tr.ewm(com=p - 1, adjust=False).mean()
 
 
@@ -263,6 +269,7 @@ def _safe(val, default: float = 0.0) -> float:
 # ─────────────────────────────────────────────────────────────────
 # FEATURE PREPARATION
 # ─────────────────────────────────────────────────────────────────
+
 
 class StrategyEngine:
     """
@@ -324,16 +331,23 @@ class StrategyEngine:
         d["dist21"] = (d["close"] - d["ema21"]) / d["atr14"].replace(0, np.nan)
 
         d["rsi_recov"] = (
-            (d["rsi14"] > d["rsi14"].shift(1)) &
-            (d["rsi14"].shift(1) < d["rsi14"].shift(2)) &
-            (d["rsi14"] > 48)
+            (d["rsi14"] > d["rsi14"].shift(1)) & (d["rsi14"].shift(1) < d["rsi14"].shift(2)) & (d["rsi14"] > 48)
         )
 
         # ── H4 regime ───────────────────────────────────────────
-        h4 = d.resample("4h").agg({
-            "open": "first", "high": "max", "low": "min",
-            "close": "last", "volume": "sum",
-        }).dropna()
+        h4 = (
+            d.resample("4h")
+            .agg(
+                {
+                    "open": "first",
+                    "high": "max",
+                    "low": "min",
+                    "close": "last",
+                    "volume": "sum",
+                }
+            )
+            .dropna()
+        )
         h4["e21"] = _ema(h4["close"], 21)
         h4["e50"] = _ema(h4["close"], 50)
         h4["e200"] = _ema(h4["close"], 200)
@@ -344,9 +358,12 @@ class StrategyEngine:
         h4["regime"] = h4.apply(self._h4_regime, axis=1)
 
         for col, src in [
-            ("h4_reg", "regime"), ("h4_atr", "atr"),
-            ("h4_adx", "adx"), ("h4_sl", "sl21"),
-            ("h4_rsi", "rsi"), ("h4_e21", "e21"),
+            ("h4_reg", "regime"),
+            ("h4_atr", "atr"),
+            ("h4_adx", "adx"),
+            ("h4_sl", "sl21"),
+            ("h4_rsi", "rsi"),
+            ("h4_e21", "e21"),
             ("h4_e50", "e50"),
         ]:
             d[col] = h4[src].reindex(d.index, method="ffill")
@@ -356,18 +373,29 @@ class StrategyEngine:
         d["h4_rsi"] = d["h4_rsi"].fillna(50)
 
         # ── D1 trend ────────────────────────────────────────────
-        d1 = d.resample("1D").agg({
-            "open": "first", "high": "max", "low": "min",
-            "close": "last", "volume": "sum",
-        }).dropna()
+        d1 = (
+            d.resample("1D")
+            .agg(
+                {
+                    "open": "first",
+                    "high": "max",
+                    "low": "min",
+                    "close": "last",
+                    "volume": "sum",
+                }
+            )
+            .dropna()
+        )
         if len(d1) >= 3:
             d1["e50"] = _ema(d1["close"], 50)
             d1["e200"] = _ema(d1["close"], 200)
             d1["sl50"] = d1["e50"] - d1["e50"].shift(5)
             d1["trend"] = np.where(
-                (d1["close"] > d1["e50"]) & (d1["sl50"] > 0), "bull",
+                (d1["close"] > d1["e50"]) & (d1["sl50"] > 0),
+                "bull",
                 np.where(
-                    (d1["close"] < d1["e50"]) & (d1["sl50"] < 0), "bear",
+                    (d1["close"] < d1["e50"]) & (d1["sl50"] < 0),
+                    "bear",
                     "neutral",
                 ),
             )
@@ -378,16 +406,8 @@ class StrategyEngine:
         # ── Structure patterns ──────────────────────────────────
         d["bos_bull"] = d["close"] > d["hh10"]
         d["bos_bear"] = d["close"] < d["ll10"]
-        d["mss_bull"] = (
-            (d["ema9"] > d["ema21"]) &
-            (d["ema9"].shift(3) < d["ema21"].shift(3)) &
-            (d["rsi14"] > 52)
-        )
-        d["mss_bear"] = (
-            (d["ema9"] < d["ema21"]) &
-            (d["ema9"].shift(3) > d["ema21"].shift(3)) &
-            (d["rsi14"] < 48)
-        )
+        d["mss_bull"] = (d["ema9"] > d["ema21"]) & (d["ema9"].shift(3) < d["ema21"].shift(3)) & (d["rsi14"] > 52)
+        d["mss_bear"] = (d["ema9"] < d["ema21"]) & (d["ema9"].shift(3) > d["ema21"].shift(3)) & (d["rsi14"] < 48)
 
         return d.dropna(subset=["ema9", "ema21", "ema50", "ema200", "rsi14", "atr14", "h4_atr"])
 
@@ -399,23 +419,29 @@ class StrategyEngine:
         b200 = r["e50"] < r["e200"]
         adx = r["adx"]
         sl = r["sl21"]
-        if bull and adx >= 20 and sl > 0 and a200:  return "STERK_BULL"
-        if bull and adx >= 14:                       return "BULL"
-        if bull:                                     return "ZWAK_BULL"
-        if bear and adx >= 20 and sl < 0 and b200:  return "STERK_BEAR"
-        if bear and adx >= 14:                       return "BEAR"
-        if bear:                                     return "ZWAK_BEAR"
+        if bull and adx >= 20 and sl > 0 and a200:
+            return "STERK_BULL"
+        if bull and adx >= 14:
+            return "BULL"
+        if bull:
+            return "ZWAK_BULL"
+        if bear and adx >= 20 and sl < 0 and b200:
+            return "STERK_BEAR"
+        if bear and adx >= 14:
+            return "BEAR"
+        if bear:
+            return "ZWAK_BEAR"
         return "CHOPPY"
 
     def generate_signal(
         self,
         df: pd.DataFrame,
-        cfg: Optional[dict] = None,
+        cfg: dict | None = None,
         sentiment_score: float = 0.0,
         sentiment_label: str = "neutral",
         ml_confidence: float = 0.5,
         is_killzone: bool = False,
-    ) -> Optional[SignalResult]:
+    ) -> SignalResult | None:
         """
         Genereert een SignalResult op basis van de laatste volledige bar.
         Retourneert None als er geen valide signaal is.
@@ -491,11 +517,11 @@ class StrategyEngine:
 
         # ── LONG signalen ────────────────────────────────────────
         bull_ok = (
-            not block_long and
-            h4reg in ("STERK_BULL", "BULL", "ZWAK_BULL") and
-            d1t in ("bull", "neutral") and
-            cl > e50 and
-            cl > e200 * 0.998
+            not block_long
+            and h4reg in ("STERK_BULL", "BULL", "ZWAK_BULL")
+            and d1t in ("bull", "neutral")
+            and cl > e50
+            and cl > e200 * 0.998
         )
 
         if bull_ok:
@@ -508,31 +534,42 @@ class StrategyEngine:
                 sigs.append(("long", "B_MACDCROSS", risk_b * sent_mult_long, tp1r, tp2r, tp3r))
 
             # C_MOMENTUM: alleen STERK_BULL + hogere ADX + sterkere momentum
-            if (e9 > e21 > e50 and 50 <= rsi14 <= 65 and macdh > 0.5
-                    and h4sl > 0.3 and rsi_rec and h4reg == "STERK_BULL" and adx > 20):
+            if (
+                e9 > e21 > e50
+                and 50 <= rsi14 <= 65
+                and macdh > 0.5
+                and h4sl > 0.3
+                and rsi_rec
+                and h4reg == "STERK_BULL"
+                and adx > 20
+            ):
                 sigs.append(("long", "C_MOMENTUM", risk_b * sent_mult_long, tp1r, tp2r, tp3r))
 
             # D_PULLBACK: schonere pullback range (dichter bij EMA21)
-            if (h4reg == "STERK_BULL" and -0.2 <= dist21 <= 0.6
-                    and cl > e21 and 50 <= rsi14 <= 61 and e9 > e21 and macdh > -0.5):
+            if (
+                h4reg == "STERK_BULL"
+                and -0.2 <= dist21 <= 0.6
+                and cl > e21
+                and 50 <= rsi14 <= 61
+                and e9 > e21
+                and macdh > -0.5
+            ):
                 sigs.append(("long", "D_PULLBACK", risk_c * sent_mult_long, tp1r, tp2r, tp3r))
 
             # E_BOS: risk_c (was risk_b) + strengere ADX-filter
-            if (bos_b and cl > e21 and 53 <= rsi14 <= 68
-                    and adx > 22 and h4reg in ("STERK_BULL", "BULL")):
+            if bos_b and cl > e21 and 53 <= rsi14 <= 68 and adx > 22 and h4reg in ("STERK_BULL", "BULL"):
                 sigs.append(("long", "E_BOS", risk_c * sent_mult_long, tp1r * 0.9, tp2r, tp3r * 0.9))
 
-            if (mss_b and 50 <= rsi14 <= 65 and cl > e21
-                    and h4reg in ("STERK_BULL", "BULL") and h4sl > 0):
+            if mss_b and 50 <= rsi14 <= 65 and cl > e21 and h4reg in ("STERK_BULL", "BULL") and h4sl > 0:
                 sigs.append(("long", "F_MSS", risk_c * sent_mult_long, tp1r, tp2r, tp3r))
 
         # ── SHORT signalen ───────────────────────────────────────
         bear_ok = (
-            not block_short and
-            h4reg in ("STERK_BEAR", "BEAR", "ZWAK_BEAR") and
-            d1t in ("bear", "neutral") and
-            cl < e50 and
-            cl < e200 * 1.002
+            not block_short
+            and h4reg in ("STERK_BEAR", "BEAR", "ZWAK_BEAR")
+            and d1t in ("bear", "neutral")
+            and cl < e50
+            and cl < e200 * 1.002
         )
 
         if bear_ok:
@@ -545,22 +582,32 @@ class StrategyEngine:
                 sigs.append(("short", "B_MACDCROSS", risk_b * sent_mult_short, tp1r, tp2r, tp3r))
 
             # C_MOMENTUM: alleen STERK_BEAR + hogere ADX + sterkere neerwaartse momentum
-            if (e9 < e21 < e50 and 35 <= rsi14 <= rsi_hi and macdh < -0.5
-                    and h4sl < -0.3 and h4reg == "STERK_BEAR" and adx > 20):
+            if (
+                e9 < e21 < e50
+                and 35 <= rsi14 <= rsi_hi
+                and macdh < -0.5
+                and h4sl < -0.3
+                and h4reg == "STERK_BEAR"
+                and adx > 20
+            ):
                 sigs.append(("short", "C_MOMENTUM", risk_b * sent_mult_short, tp1r, tp2r, tp3r))
 
             # D_PULLBACK: schonere pullback range (dichter bij EMA21)
-            if (h4reg == "STERK_BEAR" and -0.6 <= dist21 <= 0.2
-                    and cl < e21 and 39 <= rsi14 <= rsi_hi and e9 < e21 and macdh < 0.5):
+            if (
+                h4reg == "STERK_BEAR"
+                and -0.6 <= dist21 <= 0.2
+                and cl < e21
+                and 39 <= rsi14 <= rsi_hi
+                and e9 < e21
+                and macdh < 0.5
+            ):
                 sigs.append(("short", "D_PULLBACK", risk_c * sent_mult_short, tp1r, tp2r, tp3r))
 
             # E_BOS: risk_c (was risk_b) + strengere ADX-filter
-            if (bos_be and cl < e21 and rsi_lo <= rsi14 <= rsi_hi - 2
-                    and adx > 22 and h4reg in ("STERK_BEAR", "BEAR")):
+            if bos_be and cl < e21 and rsi_lo <= rsi14 <= rsi_hi - 2 and adx > 22 and h4reg in ("STERK_BEAR", "BEAR"):
                 sigs.append(("short", "E_BOS", risk_c * sent_mult_short, tp1r * 0.9, tp2r, tp3r * 0.9))
 
-            if (mss_be and 35 <= rsi14 <= rsi_hi and cl < e21
-                    and h4reg in ("STERK_BEAR", "BEAR") and h4sl < 0):
+            if mss_be and 35 <= rsi14 <= rsi_hi and cl < e21 and h4reg in ("STERK_BEAR", "BEAR") and h4sl < 0:
                 sigs.append(("short", "F_MSS", risk_c * sent_mult_short, tp1r, tp2r, tp3r))
 
         if not sigs:
@@ -641,13 +688,23 @@ class StrategyEngine:
             reason=reason,
             timestamp=ts,
             features={
-                "rsi14": rsi14, "adx14": adx, "macd_hist": macdh,
-                "h4_adx": h4adx, "h4_reg": h4reg, "d1_trend": d1t,
-                "ema_xup": ema_xup, "ema_xdn": ema_xdn,
-                "macd_xup": macd_xu, "macd_xdn": macd_xd,
-                "bos_bull": bos_b, "bos_bear": bos_be,
-                "mss_bull": mss_b, "mss_bear": mss_be,
-                "dist21": dist21, "h4_sl": h4sl, "atr14": atr14,
+                "rsi14": rsi14,
+                "adx14": adx,
+                "macd_hist": macdh,
+                "h4_adx": h4adx,
+                "h4_reg": h4reg,
+                "d1_trend": d1t,
+                "ema_xup": ema_xup,
+                "ema_xdn": ema_xdn,
+                "macd_xup": macd_xu,
+                "macd_xdn": macd_xd,
+                "bos_bull": bos_b,
+                "bos_bear": bos_be,
+                "mss_bull": mss_b,
+                "mss_bear": mss_be,
+                "dist21": dist21,
+                "h4_sl": h4sl,
+                "atr14": atr14,
                 "sentiment": sentiment_score,
                 "breakeven_r": breakeven_r,
                 "is_killzone": is_killzone,
@@ -659,12 +716,18 @@ class StrategyEngine:
         """Geeft sessie terug op basis van UTC uur (compatibel met V16)."""
         uur = dt.hour
         dow = dt.weekday()
-        if dow >= 5:              return "blocked"
-        if dow == 0 and uur < 7:  return "blocked"
-        if dow == 4 and uur >= 17: return "blocked"
-        if 7 <= uur < 12:         return "premium"
-        if 13 <= uur <= 17:       return "premium"
-        if uur == 12:             return "standard"
+        if dow >= 5:
+            return "blocked"
+        if dow == 0 and uur < 7:
+            return "blocked"
+        if dow == 4 and uur >= 17:
+            return "blocked"
+        if 7 <= uur < 12:
+            return "premium"
+        if 13 <= uur <= 17:
+            return "premium"
+        if uur == 12:
+            return "standard"
         return "blocked"
 
 
@@ -672,7 +735,7 @@ class StrategyEngine:
 # SINGLETON INSTANCE
 # ─────────────────────────────────────────────────────────────────
 
-_engine_instance: Optional[StrategyEngine] = None
+_engine_instance: StrategyEngine | None = None
 _engine_lock = threading.Lock()
 
 

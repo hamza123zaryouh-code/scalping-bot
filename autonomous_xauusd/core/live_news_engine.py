@@ -323,8 +323,8 @@ class LiveNewsEngine:
 
     def _fetch_newsapi(self) -> list[NewsItem]:
         """Fetch from NewsAPI.org using gold/macro topics."""
-        import urllib.request
         import urllib.parse
+        import urllib.request
 
         items: list[NewsItem] = []
         for query in _NEWSAPI_QUERIES[:3]:  # limit to 3 queries to conserve quota

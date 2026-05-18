@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -45,7 +45,7 @@ class RunOptimizerBody(BaseModel):
     end_date: date
     symbol: str = "XAUUSD"
     starting_capital: float = 160_000.0
-    param_grid: Optional[dict[str, list[Any]]] = None
+    param_grid: dict[str, list[Any]] | None = None
     walk_forward_splits: int = Field(default=3, ge=2, le=10)
     is_pct: float = Field(default=0.70, ge=0.50, le=0.90)
     max_combinations: int = Field(default=50, ge=1, le=500)

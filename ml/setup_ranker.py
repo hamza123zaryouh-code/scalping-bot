@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +102,7 @@ class SetupRanker:
         d1_trend: str,
         rsi14: float,
         session: str,
-        features: Optional[dict] = None,
+        features: dict | None = None,
     ) -> RankingResult:
         """
         Genereer een volledig rankingsresultaat voor een setup.
@@ -111,7 +110,7 @@ class SetupRanker:
         # 1. ML confidence (40% gewicht)
         ml_conf = 0.5
         if self._feedback is not None and features:
-            from ml.feedback_engine import MODEL_FEATURES, H4_REGIME_SCORE, SIGNAL_PRIORITY_MAP
+            from ml.feedback_engine import H4_REGIME_SCORE, SIGNAL_PRIORITY_MAP
             feat = dict(features)
             feat["h4_regime_score"] = float(H4_REGIME_SCORE.get(h4_regime, 0))
             feat["d1_bull"] = 1.0 if d1_trend == "bull" else (0.0 if d1_trend == "neutral" else -1.0)
@@ -216,7 +215,7 @@ class SetupRanker:
 # SINGLETON
 # ─────────────────────────────────────────────────────────────────
 
-_ranker_instance: Optional[SetupRanker] = None
+_ranker_instance: SetupRanker | None = None
 
 
 def get_ranker(feedback_engine=None, pattern_memory=None) -> SetupRanker:

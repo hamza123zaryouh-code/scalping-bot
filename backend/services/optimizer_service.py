@@ -11,6 +11,7 @@ Features:
   - Performance ranking per parameter set
   - Optuna integratie (optioneel — valt terug op grid search)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -18,9 +19,8 @@ import logging
 import math
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, date, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -37,41 +37,46 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 # DATA CLASSES
 # ─────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class OptimizerRequest:
     """Configuratie voor een optimalisatierun."""
+
     start_date: date
     end_date: date
     symbol: str = "XAUUSD"
     starting_capital: float = 160_000.0
 
     # Grid search parameters
-    param_grid: dict = field(default_factory=lambda: {
-        "risk_a": [0.003, 0.004, 0.005],
-        "risk_b": [0.002, 0.003, 0.004],
-        "risk_c": [0.0015, 0.002, 0.0025],
-        "sl_atr": [1.2, 1.5, 1.8],
-        "tp1_r": [1.2, 1.5, 2.0],
-        "tp2_r": [2.0, 2.5, 3.0],
-        "adx_min": [12, 14, 18],
-    })
+    param_grid: dict = field(
+        default_factory=lambda: {
+            "risk_a": [0.003, 0.004, 0.005],
+            "risk_b": [0.002, 0.003, 0.004],
+            "risk_c": [0.0015, 0.002, 0.0025],
+            "sl_atr": [1.2, 1.5, 1.8],
+            "tp1_r": [1.2, 1.5, 2.0],
+            "tp2_r": [2.0, 2.5, 3.0],
+            "adx_min": [12, 14, 18],
+        }
+    )
 
     # Walk-forward configuratie
     walk_forward_splits: int = 3
-    is_pct: float = 0.70            # In-sample percentage
-    max_combinations: int = 50      # Max combinaties te testen
+    is_pct: float = 0.70  # In-sample percentage
+    max_combinations: int = 50  # Max combinaties te testen
 
     # Doelmetriek
-    objective: str = "sharpe"       # "sharpe" | "profit_factor" | "monthly_return"
+    objective: str = "sharpe"  # "sharpe" | "profit_factor" | "monthly_return"
 
     # Overfitting filter
     min_oos_sharpe: float = 0.5
-    max_is_oos_ratio: float = 2.5   # IS Sharpe / OOS Sharpe moet < 2.5 zijn
+    max_is_oos_ratio: float = 2.5  # IS Sharpe / OOS Sharpe moet < 2.5 zijn
 
 
 @dataclass
 class ParameterSetResult:
     """Resultaat van één parameter combinatie."""
+
     params: dict
     is_sharpe: float
     oos_sharpe: float
@@ -82,7 +87,7 @@ class ParameterSetResult:
     max_drawdown: float
     trade_count: int
     is_overfitted: bool
-    overfitting_score: float        # 0.0 (goed) - 1.0 (slecht)
+    overfitting_score: float  # 0.0 (goed) - 1.0 (slecht)
     rank: int = 0
 
     def to_dict(self) -> dict:
@@ -105,6 +110,7 @@ class ParameterSetResult:
 @dataclass
 class OptimizerResult:
     """Volledig resultaat van een optimalisatierun."""
+
     job_id: str
     request: OptimizerRequest
     best_params: dict
@@ -129,16 +135,17 @@ class OptimizerResult:
 @dataclass
 class OptimizerJob:
     """Achtergrond optimalisatie job."""
+
     job_id: str
     request: OptimizerRequest
-    status: str = "pending"         # pending | running | completed | failed
-    progress: float = 0.0           # 0.0 - 1.0
+    status: str = "pending"  # pending | running | completed | failed
+    progress: float = 0.0  # 0.0 - 1.0
     message: str = ""
-    result: Optional[OptimizerResult] = None
-    error: Optional[str] = None
+    result: OptimizerResult | None = None
+    error: str | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -157,6 +164,7 @@ class OptimizerJob:
 # ─────────────────────────────────────────────────────────────────
 # OPTIMIZER SERVICE
 # ─────────────────────────────────────────────────────────────────
+
 
 class OptimizerService:
     """
@@ -185,7 +193,7 @@ class OptimizerService:
         logger.info("Optimizer job gestart: %s", job_id)
         return job_id
 
-    def get_job(self, job_id: str) -> Optional[dict]:
+    def get_job(self, job_id: str) -> dict | None:
         """Geeft job status terug."""
         job = self._jobs.get(job_id)
         return job.to_dict() if job else None
@@ -193,7 +201,8 @@ class OptimizerService:
     def list_jobs(self, limit: int = 20) -> list[dict]:
         """Geeft alle jobs terug, meest recent eerst."""
         return [
-            j.to_dict() for j in sorted(
+            j.to_dict()
+            for j in sorted(
                 self._jobs.values(),
                 key=lambda j: j.created_at,
                 reverse=True,
@@ -206,10 +215,7 @@ class OptimizerService:
 
     def get_best_params(self) -> dict:
         """Geeft de best gevonden parameters terug uit alle runs."""
-        completed_jobs = [
-            j for j in self._jobs.values()
-            if j.status == "completed" and j.result is not None
-        ]
+        completed_jobs = [j for j in self._jobs.values() if j.status == "completed" and j.result is not None]
         if not completed_jobs:
             return DEFAULT_CFG.copy()
 
@@ -253,8 +259,11 @@ class OptimizerService:
             for i, params in enumerate(combinations):
                 try:
                     result = await asyncio.to_thread(
-                        self._evaluate_params, df_feat, params,
-                        job.request.starting_capital, job.request.walk_forward_splits,
+                        self._evaluate_params,
+                        df_feat,
+                        params,
+                        job.request.starting_capital,
+                        job.request.walk_forward_splits,
                         job.request.is_pct,
                     )
                     results.append(result)
@@ -299,11 +308,15 @@ class OptimizerService:
             job.finished_at = datetime.now(timezone.utc)
 
             self._save_result(opt_result)
-            self._history.append({"job_id": job.job_id, "completed_at": datetime.now(timezone.utc).isoformat(), "summary": summary})
+            self._history.append(
+                {"job_id": job.job_id, "completed_at": datetime.now(timezone.utc).isoformat(), "summary": summary}
+            )
 
             logger.info(
                 "Optimizer job %s klaar: %d resultaten in %.0fs",
-                job.job_id, len(valid), duration,
+                job.job_id,
+                len(valid),
+                duration,
             )
 
         except Exception as exc:
@@ -376,9 +389,7 @@ class OptimizerService:
 
         overfitting_ratio = (avg_is_sharpe / max(avg_oos_sharpe, 0.01)) if avg_oos_sharpe > 0 else 99.0
         is_overfitted = (
-            overfitting_ratio > 2.5 or
-            avg_oos_sharpe < 0.5 or
-            (avg_is_sharpe > 1.0 and avg_oos_sharpe < 0.3)
+            overfitting_ratio > 2.5 or avg_oos_sharpe < 0.5 or (avg_is_sharpe > 1.0 and avg_oos_sharpe < 0.3)
         )
         overfitting_score = min(1.0, max(0.0, (overfitting_ratio - 1.0) / 4.0))
 
@@ -436,7 +447,7 @@ class OptimizerService:
         tp2_pct = float(params.get("tp2_pct", 0.30))
 
         for i in range(4, len(df)):
-            window = df.iloc[:i + 1]
+            window = df.iloc[: i + 1]
             try:
                 sig = self._engine.generate_signal(window, cfg=params)
             except Exception:
@@ -459,8 +470,6 @@ class OptimizerService:
             next_bar = df.iloc[i + 1]
             hi = float(next_bar["high"])
             lo = float(next_bar["low"])
-            entry = sig.entry_price
-
             tp1_price = sig.take_profit_1
             tp2_price = sig.take_profit_2
             sl_price = sig.stop_loss
@@ -502,6 +511,7 @@ class OptimizerService:
         """Haal historische XAUUSD data op via yfinance."""
         try:
             import yfinance as yf
+
             days = (end_date - start_date).days + 30
             period = f"{days}d"
             df = yf.download("GC=F", period=period, interval="1h", progress=False, auto_adjust=False)
@@ -539,6 +549,7 @@ class OptimizerService:
     def _save_result(self, result: OptimizerResult) -> None:
         try:
             import json
+
             path = RESULTS_DIR / f"optimizer_{result.job_id}.json"
             path.write_text(
                 json.dumps(result.to_dict(), indent=2, default=str),
@@ -550,14 +561,17 @@ class OptimizerService:
     def _load_history(self) -> None:
         try:
             import json
+
             for path in sorted(RESULTS_DIR.glob("optimizer_*.json"))[-20:]:
                 try:
                     data = json.loads(path.read_text(encoding="utf-8"))
-                    self._history.append({
-                        "job_id": data.get("job_id"),
-                        "completed_at": data.get("completed_at"),
-                        "summary": data.get("summary", {}),
-                    })
+                    self._history.append(
+                        {
+                            "job_id": data.get("job_id"),
+                            "completed_at": data.get("completed_at"),
+                            "summary": data.get("summary", {}),
+                        }
+                    )
                 except Exception:
                     continue
         except Exception:
@@ -568,7 +582,7 @@ class OptimizerService:
 # SINGLETON
 # ─────────────────────────────────────────────────────────────────
 
-_optimizer_service: Optional[OptimizerService] = None
+_optimizer_service: OptimizerService | None = None
 
 
 def get_optimizer_service() -> OptimizerService:

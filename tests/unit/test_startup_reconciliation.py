@@ -1,7 +1,6 @@
 """Tests for MT5 startup position reconciliation in LiveRuntime._sync_open_positions()."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 

@@ -95,11 +95,7 @@ class XAUUSDSettings:
 
 def load_settings(base_dir: Path | None = None) -> XAUUSDSettings:
     root = base_dir or Path(__file__).resolve().parent.parent
-    file_env = {
-        key: str(value)
-        for key, value in dotenv_values(root / ".env").items()
-        if key and value is not None
-    }
+    file_env = {key: str(value) for key, value in dotenv_values(root / ".env").items() if key and value is not None}
 
     def _read(name: str, default: str = "") -> str:
         value = os.getenv(name)
@@ -203,10 +199,14 @@ def load_settings(base_dir: Path | None = None) -> XAUUSDSettings:
             "TELEGRAM_CONTROL_API_KEY",
             _read("API_KEY", _read("SECRET_KEY", "")),
         ).strip(),
-        telegram_backend_base_url=_read("TELEGRAM_BACKEND_BASE_URL", "http://127.0.0.1:8000").strip() or "http://127.0.0.1:8000",
+        telegram_backend_base_url=_read("TELEGRAM_BACKEND_BASE_URL", "http://127.0.0.1:8000").strip()
+        or "http://127.0.0.1:8000",
         max_trades_per_day=_read_int("AUTO_MAX_TRADES_PER_DAY", 5),
         max_losses_per_day=_read_int("AUTO_MAX_LOSSES_PER_DAY", 3),
-        signal_cooldown_minutes=_read_int("DUPLICATE_SIGNAL_COOLDOWN_MINUTES", _read_int("AUTO_SIGNAL_COOLDOWN_MINUTES", 60)),
+        signal_cooldown_minutes=_read_int(
+            "DUPLICATE_SIGNAL_COOLDOWN_MINUTES",
+            _read_int("AUTO_SIGNAL_COOLDOWN_MINUTES", 60),
+        ),
         max_spread_points=_read_int("MAX_SPREAD_POINTS", _read_int("AUTO_MAX_SPREAD_POINTS", 350)),
         train_every_days=_read_int("AUTO_TRAIN_EVERY_DAYS", 7),
         daily_report_hour_utc=_read_int("AUTO_DAILY_REPORT_HOUR_UTC", 19),

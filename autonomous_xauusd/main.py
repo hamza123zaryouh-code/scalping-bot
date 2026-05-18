@@ -67,10 +67,10 @@ class AutonomousTradingSystem:
         self._ftmo_guard: FTMOGuard = get_ftmo_guard(
             FTMOConfig(
                 start_capital=160_000.0,
-                max_daily_loss=6_000.0,       # was €8,000 — verlaagd voor extra bescherming
-                max_weekly_loss=10_000.0,     # was €11,200 — proportioneel aangepast
+                max_daily_loss=6_000.0,  # was €8,000 — verlaagd voor extra bescherming
+                max_weekly_loss=10_000.0,  # was €11,200 — proportioneel aangepast
                 max_total_drawdown=16_000.0,
-                daily_buffer=400.0,           # stop bij €5,600 dagverlies
+                daily_buffer=400.0,  # stop bij €5,600 dagverlies
             )
         )
 
@@ -108,16 +108,20 @@ class AutonomousTradingSystem:
         cb = self.circuit_breaker.get_status_summary()
         session = self.session_engine.get_session_info()
         control = self.memory.get_bot_control_state()
+        symbol = runtime.get("symbol", self.settings.symbol)
+        timeframe = runtime.get("timeframe", self.settings.timeframe)
+        cb_status = "ACTIVE" if cb.get("circuit_breaker_active") else "OK"
+        cb_description = cb.get("circuit_description", "")
         return (
             f"V20 Status: {runtime.get('status', 'idle')}\n"
             f"Mode: {runtime.get('mode', self.settings.mode)}\n"
-            f"Symbool: {runtime.get('symbol', self.settings.symbol)} {runtime.get('timeframe', self.settings.timeframe)}\n"
+            f"Symbool: {symbol} {timeframe}\n"
             f"Open posities: {runtime.get('open_positions', 0)}\n"
             f"Equity: EUR {runtime.get('equity', 0.0):,.2f}\n"
             f"Sessie: {session.session.value} ({session.description})\n"
             f"Sentiment: {sentiment.get('label', 'n.v.t.')} ({sentiment.get('score', 0.0):+.2f})\n"
             f"Macro event: {sentiment.get('macro_event_level', 'LOW')}\n"
-            f"Circuit Breaker: {'ACTIVE' if cb.get('circuit_breaker_active') else 'OK'} - {cb.get('circuit_description', '')}\n"
+            f"Circuit Breaker: {cb_status} - {cb_description}\n"
             f"Risk multiplier: {cb.get('risk_multiplier', 1.0):.0%}\n"
             f"Signals enabled: {'yes' if control.get('signals_enabled', True) else 'no'}\n"
             f"Laatste bar: {runtime.get('last_bar', 'n.v.t.')}\n"
@@ -257,7 +261,7 @@ class AutonomousTradingSystem:
             # Check FTMO guard
             if not self._ftmo_guard.can_trade():
                 locks = self._ftmo_guard.get_active_locks()
-                blocking = [l for l in locks if l.locked and l.severity in ("BLOCK", "CRITICAL")]
+                blocking = [lock for lock in locks if lock.locked and lock.severity in ("BLOCK", "CRITICAL")]
                 reason = blocking[0].reason if blocking else "FTMO protection active"
                 logger.warning("Trading geblokkeerd door FTMO guard: %s", reason)
                 self._update_runtime_state(status="ftmo_blocked", ftmo_reason=reason, equity=account.get("equity", 0.0))
@@ -270,7 +274,9 @@ class AutonomousTradingSystem:
                 logger.warning("Trading geblokkeerd door news guard: %s", news_decision.reason)
                 if news_decision.lock_expires_at:
                     self._ftmo_guard.set_news_lock(news_decision.lock_expires_at)
-                self._update_runtime_state(status="news_lock", news_reason=news_decision.reason, equity=account.get("equity", 0.0))
+                self._update_runtime_state(
+                    status="news_lock", news_reason=news_decision.reason, equity=account.get("equity", 0.0)
+                )
                 return
 
             # Haal V20 live config op (hot-reload vanuit live_strategy.json)
@@ -294,13 +300,18 @@ class AutonomousTradingSystem:
             if signal and not self.engine.has_open_position(self.settings.symbol):
                 risk_mult = self.circuit_breaker.get_risk_multiplier()
                 # Pattern memory: check if setup is blocked
-                sig_type = signal.features.get("signal_type", signal.reason) if isinstance(signal.features, dict) else signal.reason
+                sig_type = (
+                    signal.features.get("signal_type", signal.reason)
+                    if isinstance(signal.features, dict)
+                    else signal.reason
+                )
                 h4_regime = signal.market_regime or ""
                 # Circuit breaker graduated protection: block disallowed signal types
                 if not self.circuit_breaker.is_signal_allowed(sig_type):
                     logger.info(
                         "Trade geblokkeerd door circuit_breaker (stage %d): %s",
-                        self.circuit_breaker.get_graduated_stage(), sig_type,
+                        self.circuit_breaker.get_graduated_stage(),
+                        sig_type,
                     )
                     self._update_runtime_state(status="running", last_signal="blocked: circuit_breaker")
                     return
@@ -313,7 +324,10 @@ class AutonomousTradingSystem:
                 if not allowed:
                     logger.info(
                         "Trade geblokkeerd door risk_gate: %s | signaal=%s %s %s",
-                        gate_reason, signal.side, sig_type, self.settings.symbol,
+                        gate_reason,
+                        signal.side,
+                        sig_type,
+                        self.settings.symbol,
                     )
                     self._update_runtime_state(
                         status="running",
@@ -324,7 +338,11 @@ class AutonomousTradingSystem:
                     return
                 logger.info(
                     "Trade openen: %s %s %s | gates=%s | risk_mult=%.0f%%",
-                    signal.side, sig_type, self.settings.symbol, gate_reason, risk_mult * 100,
+                    signal.side,
+                    sig_type,
+                    self.settings.symbol,
+                    gate_reason,
+                    risk_mult * 100,
                 )
                 execution = self.engine.execute_trade(
                     signal,
@@ -332,18 +350,25 @@ class AutonomousTradingSystem:
                     account_equity=account.get("equity", 0.0),
                     risk_multiplier=risk_mult,
                 )
-                self.memory.set_runtime_state(
-                    "last_trade_opened_at", datetime.now(timezone.utc).isoformat()
-                )
+                self.memory.set_runtime_state("last_trade_opened_at", datetime.now(timezone.utc).isoformat())
                 self._ftmo_guard.record_trade_opened()
                 self._pattern_memory.record_trade_opened(
-                    sig_type, signal.side, h4_regime=h4_regime,
+                    sig_type,
+                    signal.side,
+                    h4_regime=h4_regime,
                     session=session_info.session.value,
                 )
                 self.memory.log_trade_open(execution, sentiment_score=current_sentiment.score)
-                self.telegram.notify(self._format_trade_open_message(
-                    execution, signal, session_info, sentiment_result, risk_mult, sig_type,
-                ))
+                self.telegram.notify(
+                    self._format_trade_open_message(
+                        execution,
+                        signal,
+                        session_info,
+                        sentiment_result,
+                        risk_mult,
+                        sig_type,
+                    )
+                )
 
             self._write_bot_state(account, session_info, sentiment_result, signal)
             training = self._maybe_train()
@@ -400,10 +425,14 @@ class AutonomousTradingSystem:
                 "last_signal": existing.get("last_signal"),
                 "signal_history": signal_history[-100:],
                 "signals_today": sum(
-                    1 for item in signal_history if str(item.get("time", "")).startswith(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+                    1
+                    for item in signal_history
+                    if str(item.get("time", "")).startswith(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
                 ),
                 "cycle_count": int(existing.get("cycle_count", 0)) + 1,
-                "day_start_equity": account.get("day_start_equity", existing.get("day_start_equity", account.get("balance", 0.0))),
+                "day_start_equity": account.get(
+                    "day_start_equity", existing.get("day_start_equity", account.get("balance", 0.0))
+                ),
                 "last_sentiment": sentiment_result.to_dict(),
                 "circuit_breaker": self.circuit_breaker.get_status_summary(),
                 "session": session_info.to_dict(),
@@ -490,11 +519,21 @@ class AutonomousTradingSystem:
     def _process_control_commands(self) -> None:
         commands = self.memory.fetch_pending_control_commands(limit=20)
         for command in commands:
+            command_id: int | None = None
             try:
                 command_id = int(command["id"])
-                action = str(command["command"])
+                action_raw = command.get("command")
+                if not isinstance(action_raw, str) or not action_raw.strip():
+                    raise ValueError("Missing control command action")
+                action = action_raw.strip()
             except (ValueError, TypeError):
                 logger.error("Malformed control command skipped: %s", command)
+                if command_id is not None:
+                    self.memory.update_control_command(
+                        command_id,
+                        "failed",
+                        error_message="Malformed control command payload.",
+                    )
                 continue
             try:
                 result = self._execute_control_command(action)
@@ -518,10 +557,7 @@ class AutonomousTradingSystem:
         if action == "resume_trading":
             current = self.memory.get_bot_control_state()
             if current.get("emergency_stop", False):
-                return (
-                    "Resume geweigerd: emergency stop is actief. "
-                    "Gebruik 'Start Bot' om de emergency stop te wissen."
-                )
+                return "Resume geweigerd: emergency stop is actief. Gebruik 'Start Bot' om de emergency stop te wissen."
             self.memory.set_bot_control_state(bot_active=True, trading_paused=False)
             return "Trading hervat."
         if action == "emergency_stop":
@@ -554,6 +590,11 @@ class AutonomousTradingSystem:
         now = datetime.now(timezone.utc)
         today = now.date()
 
+        orphaned = self.memory.get_runtime_state("orphaned_positions") or {}
+        orphaned_count = int(orphaned.get("count", 0) or 0)
+        if orphaned_count > 0:
+            return False, f"orphaned_positions_detected={orphaned_count}"
+
         # Gate 1: max open positions (global, across all symbols)
         open_trades = self.memory.list_open_trades(self.settings.symbol)
         if len(open_trades) >= self.settings.max_open_positions:
@@ -562,15 +603,22 @@ class AutonomousTradingSystem:
         # Gate 2: max trades per day (opened today — closed + still open)
         daily = self.memory.daily_summary(today)
         closed_today = int(daily.get("trade_count", 0))
-        opened_today = closed_today + len(open_trades)
+        open_today = 0
+        for trade in open_trades:
+            opened_at = trade.get("opened_at")
+            if hasattr(opened_at, "date") and opened_at.date() == today:
+                open_today += 1
+        opened_today = closed_today + open_today
         if opened_today >= self.settings.max_trades_per_day:
             return False, f"max_trades_per_day={self.settings.max_trades_per_day} bereikt ({opened_today} vandaag)"
 
         # Gate 3: max losses per day  (approx from win-rate on closed trades)
-        wr = float(daily.get("win_rate", 1.0))
-        losses_today = round(closed_today * (1.0 - wr))
+        losses_today = int(daily.get("loss_count", 0))
         if losses_today >= self.settings.max_losses_per_day:
-            return False, f"max_losses_per_day={self.settings.max_losses_per_day} bereikt ({losses_today} verlies vandaag)"
+            return (
+                False,
+                f"max_losses_per_day={self.settings.max_losses_per_day} bereikt ({losses_today} verlies vandaag)",
+            )
 
         # Gate 4: cooldown between trades
         last_opened = self.memory.get_runtime_state("last_trade_opened_at")
@@ -591,7 +639,9 @@ class AutonomousTradingSystem:
 
         return True, "alle_gates_ok"
 
-    def _format_trade_open_message(self, execution, signal, session_info, sentiment_result, risk_mult: float, sig_type: str) -> str:
+    def _format_trade_open_message(
+        self, execution, signal, session_info, sentiment_result, risk_mult: float, sig_type: str
+    ) -> str:
         direction_emoji = "🟢 LONG" if execution.side.lower() == "buy" else "🔴 SHORT"
         sl_pts = abs(execution.entry_price - execution.stop_loss)
         tp_pts = abs(execution.take_profit - execution.entry_price)
@@ -600,7 +650,8 @@ class AutonomousTradingSystem:
         features = execution.features if isinstance(execution.features, dict) else {}
         confidence = features.get("confidence", features.get("ml_confidence", 0.0))
         pat_mult = self._pattern_memory.get_risk_multiplier(
-            sig_type, execution.side,
+            sig_type,
+            execution.side,
             h4_regime=regime,
             session=session_info.session.value,
         )
@@ -610,14 +661,14 @@ class AutonomousTradingSystem:
 
         lines = [
             f"{direction_emoji} TRADE GEOPEND — {execution.symbol}",
-            f"",
+            "",
             f"Signaal:    {sig_type}",
             f"Entry:      {execution.entry_price:.2f}",
             f"Stop Loss:  {execution.stop_loss:.2f}  ({sl_pts:.1f} pts)",
             f"Take Profit:{execution.take_profit:.2f}  ({tp_pts:.1f} pts)",
             f"R:R ratio:  1:{rr:.1f}",
             f"Lot size:   {execution.volume:.2f}",
-            f"",
+            "",
             f"Sessie:     {session_info.session.value.upper()}",
             f"Regime:     {regime}",
             f"Sentiment:  {sentiment_result.label} ({sentiment_result.score:+.2f})",
@@ -626,11 +677,11 @@ class AutonomousTradingSystem:
             lines.append(f"ML conf:    {float(confidence):.1%}")
         lines += [
             f"Risk mult:  CB={risk_mult:.0%}  PAT={pat_mult:.0%}",
-            f"",
-            f"FTMO ruimte:",
+            "",
+            "FTMO ruimte:",
             f"  Dag:      €{daily_remaining:,.0f} resterend",
             f"  Totaal:   €{total_remaining:,.0f} resterend",
-            f"",
+            "",
             f"Mode: {execution.mode.upper()}  |  Ticket: {execution.broker_ticket}",
         ]
         return "\n".join(lines)
@@ -638,7 +689,12 @@ class AutonomousTradingSystem:
     def _format_trade_close_message(self, closed_trade) -> str:
         won = closed_trade.pnl >= 0
         result_emoji = "✅ WIN" if won else "❌ VERLIES"
-        reason_map = {"tp": "TP geraakt", "sl": "SL geraakt", "manual": "Manueel", "telegram_close_all": "Emergency close"}
+        reason_map = {
+            "tp": "TP geraakt",
+            "sl": "SL geraakt",
+            "manual": "Manueel",
+            "telegram_close_all": "Emergency close",
+        }
         reason_label = reason_map.get(closed_trade.close_reason.lower(), closed_trade.close_reason)
         ftmo = self._ftmo_guard.get_status_dict()
         daily_used = ftmo.get("daily_loss_used", 0)
@@ -648,12 +704,12 @@ class AutonomousTradingSystem:
 
         lines = [
             f"{result_emoji} — XAUUSD trade gesloten",
-            f"",
+            "",
             f"Exit:       {closed_trade.exit_price:.2f}",
             f"PnL:        €{closed_trade.pnl:+,.2f}",
             f"Reden:      {reason_label}",
-            f"",
-            f"FTMO na trade:",
+            "",
+            "FTMO na trade:",
             f"  Dag verlies:  €{daily_used:,.0f} / €{daily_limit:,.0f}  ({daily_pct:.1f}%)",
             f"  Totaal DD:    €{total_dd:,.0f}",
         ]

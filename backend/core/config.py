@@ -10,7 +10,6 @@ import yaml
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 ROOT = Path(__file__).resolve().parents[2]
 _DEV_ONLY_SECRET = "DEVELOPMENT_ONLY_SECRET_KEY_DO_NOT_USE_IN_PRODUCTION"
 _DEFAULT_DEV_CORS = (

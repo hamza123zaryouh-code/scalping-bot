@@ -39,7 +39,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +53,7 @@ _RETRY_DELAYS_SECONDS = (1.0, 3.0, 7.0)   # back-off between retries
 _DUPLICATE_WINDOW_SECONDS = 60      # don't re-open same side within this window
 
 try:
-    import MetaTrader5 as mt5
+    import MetaTrader5 as mt5  # noqa: N813
     _MT5_AVAILABLE = True
 except ImportError:  # pragma: no cover
     mt5 = None  # type: ignore[assignment]

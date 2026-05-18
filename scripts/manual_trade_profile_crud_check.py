@@ -11,7 +11,6 @@ import httpx
 from dotenv import load_dotenv
 from jose import jwt
 
-
 ROOT = Path(__file__).resolve().parents[1]
 ACCESS_COOKIE = "bot-access-token"
 
