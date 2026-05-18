@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
 
     async def _ws_log_broadcast(record) -> None:
         try:
-            await ws_manager.broadcast_event("log", record.to_dict())
+            await ws_manager.broadcast_event("log", record.to_dict(), channel="logs")
         except Exception:
             pass
 
@@ -222,11 +222,13 @@ def create_app() -> FastAPI:
                     continue
 
                 if message_type == "subscribe":
+                    channels = message.get("channels", [])
+                    ws_manager.update_subscriptions(websocket, channels)
                     await ws_manager.send_json(
                         websocket,
                         {
                             "type": "subscription.updated",
-                            "payload": {"channels": message.get("channels", [])},
+                            "payload": {"channels": channels},
                         },
                     )
                     continue

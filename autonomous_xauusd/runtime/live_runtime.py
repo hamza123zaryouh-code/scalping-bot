@@ -154,8 +154,8 @@ class LiveRuntime:
                             f"Error: {str(exc)[:200]}\n"
                             f"Restarting in {delay}s..."
                         )
-                    except Exception:
-                        pass
+                    except Exception as tg_exc:
+                        logger.warning("Could not send crash alert to Telegram: %s", tg_exc)
 
                 if not self._stop_event.is_set():
                     logger.info("LiveRuntime: restarting in %ds...", delay)
@@ -317,10 +317,54 @@ class LiveRuntime:
         try:
             from autonomous_xauusd.settings import load_settings
             settings = load_settings()
-            open_trades = self._trading_system.memory.list_open_trades(settings.symbol)
+            symbol = settings.symbol
+
+            open_trades = self._trading_system.memory.list_open_trades(symbol)
+            db_tickets = {
+                str(t.get("broker_ticket", ""))
+                for t in open_trades
+                if t.get("broker_ticket")
+            }
+            logger.info("Position sync: %d open trades in DB for %s", len(open_trades), symbol)
+
+            if settings.mode == "paper":
+                logger.info("Paper mode: skipping MT5 broker reconciliation")
+                return
+
+            # Reconcile against live broker positions
+            broker_positions = self._trading_system.engine._live_engine.sync_open_positions(symbol)
+            broker_tickets = {str(p["ticket"]) for p in broker_positions}
+
+            orphaned = [p for p in broker_positions if str(p["ticket"]) not in db_tickets]
+            if orphaned:
+                logger.warning(
+                    "Startup reconciliation: %d orphaned broker position(s) not tracked in DB: %s",
+                    len(orphaned),
+                    [p["ticket"] for p in orphaned],
+                )
+                self._trading_system.memory.set_runtime_state(
+                    "orphaned_positions",
+                    {
+                        "positions": orphaned,
+                        "detected_at": datetime.now(_UTC).isoformat(),
+                        "count": len(orphaned),
+                    },
+                )
+
+            externally_closed = [
+                t for t in open_trades
+                if t.get("broker_ticket") and str(t["broker_ticket"]) not in broker_tickets
+            ]
+            if externally_closed:
+                logger.warning(
+                    "Startup reconciliation: %d DB open trade(s) missing from MT5 (externally closed?): %s",
+                    len(externally_closed),
+                    [t.get("broker_ticket") for t in externally_closed],
+                )
+
             logger.info(
-                "Position sync: %d open trades in DB for %s",
-                len(open_trades), settings.symbol,
+                "Startup reconciliation complete: db=%d, broker=%d, orphaned=%d, externally_closed=%d",
+                len(open_trades), len(broker_positions), len(orphaned), len(externally_closed),
             )
         except Exception as exc:
             logger.warning("Position sync failed: %s", exc)
@@ -329,9 +373,14 @@ class LiveRuntime:
         if self._trading_system is None:
             return
         try:
-            self._trading_system.telegram.start_in_background()
-            self._health.telegram_connected = True
-            logger.info("Telegram control layer started")
+            tg = self._trading_system.telegram
+            tg.start_in_background()
+            running = tg.enabled and tg._thread is not None and tg._thread.is_alive()
+            self._health.telegram_connected = running
+            if running:
+                logger.info("Telegram control layer started")
+            else:
+                logger.warning("Telegram control layer disabled or thread not running — commands and alerts inactive")
         except Exception as exc:
             logger.warning("Telegram start failed: %s — continuing without Telegram", exc)
             self._health.telegram_connected = False
@@ -345,6 +394,9 @@ class LiveRuntime:
     def _run_health_checks(self) -> None:
         if self._trading_system is None:
             return
+        # Telegram liveness — thread can die after a Conflict or network error
+        tg = self._trading_system.telegram
+        self._health.telegram_connected = tg.enabled and tg._thread is not None and tg._thread.is_alive()
         # MT5 ping
         try:
             from autonomous_xauusd.settings import load_settings
@@ -384,8 +436,8 @@ class LiveRuntime:
         if self._trading_system is not None:
             try:
                 self._trading_system.telegram.notify(message)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Telegram alert failed: %s", exc)
 
     # ─────────────────────────────────────────────────────────────
     # SHUTDOWN

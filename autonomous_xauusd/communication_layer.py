@@ -3,14 +3,23 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
 import httpx
 
+_MAX_TG_LEN = 4000
+_TRUNCATED_SUFFIX = "\n…(ingekort)"
+
+
+def _truncate(text: str) -> str:
+    if len(text) <= _MAX_TG_LEN:
+        return text
+    return text[: _MAX_TG_LEN - len(_TRUNCATED_SUFFIX)] + _TRUNCATED_SUFFIX
+
 from autonomous_xauusd.memory_layer import MemoryLayer
 from autonomous_xauusd.settings import load_settings
-from backend.main import create_app
 
 try:
     from telegram.error import Conflict, TelegramError
@@ -31,18 +40,15 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
-_API_APP = create_app()
-
 
 class TelegramBackendClient:
     def __init__(self, api_key: str, base_url: str) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+        self.available = bool(base_url)
 
     async def get(self, path: str) -> dict[str, Any]:
-        transport = httpx.ASGITransport(app=_API_APP)
         async with httpx.AsyncClient(
-            transport=transport,
             base_url=self.base_url,
             headers={"X-API-Key": self.api_key},
             timeout=120.0,
@@ -52,9 +58,7 @@ class TelegramBackendClient:
             return response.json()
 
     async def post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        transport = httpx.ASGITransport(app=_API_APP)
         async with httpx.AsyncClient(
-            transport=transport,
             base_url=self.base_url,
             headers={"X-API-Key": self.api_key},
             timeout=120.0,
@@ -87,6 +91,7 @@ class TelegramControlLayer:
         self._thread_lock = threading.Lock()
         self._polling_stop = threading.Event()
         self._polling_conflict = threading.Event()
+        self._callback_last_time: dict[str, float] = {}
         self._backend = TelegramBackendClient(api_key=backend_api_key, base_url=backend_base_url)
         self._memory = MemoryLayer(load_settings().database_url)
         self._memory.initialize()
@@ -112,24 +117,16 @@ class TelegramControlLayer:
             return False
 
         try:
-            asyncio.run(self._send_message(message))
+            url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+            httpx.post(
+                url,
+                json={"chat_id": self.chat_id, "text": _truncate(message)},
+                timeout=30.0,
+            ).raise_for_status()
             return True
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(self._send_message(message))
-                return True
-            finally:
-                loop.close()
         except Exception as exc:  # pragma: no cover - network dependent
             logger.warning("Telegram notification failed: %s", exc)
             return False
-
-    async def _send_message(self, message: str) -> None:
-        if Application is None:
-            return
-        application = Application.builder().token(self.token).build()
-        await application.bot.send_message(chat_id=self.chat_id, text=message[:4000])
 
     def _run_polling(self) -> None:
         try:
@@ -194,16 +191,35 @@ class TelegramControlLayer:
                 reply_markup=self._main_menu_keyboard(),
             )
 
+    async def _backend_get(self, path: str, fallback_text: str | None = None) -> dict[str, Any]:
+        """GET via backend; returns a synthetic response dict on connectivity failure."""
+        try:
+            return await self._backend.get(path)
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+            logger.warning("Backend GET %s unavailable (%s); using fallback", path, exc)
+            text = fallback_text or "Backend tijdelijk niet beschikbaar. Probeer opnieuw."
+            return {"data": {"summary": text}}
+
+    async def _backend_post(self, path: str, payload: dict[str, Any], fallback_text: str | None = None) -> dict[str, Any]:
+        """POST via backend; returns a synthetic response dict on connectivity failure."""
+        try:
+            return await self._backend.post(path, payload)
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+            logger.warning("Backend POST %s unavailable (%s); using fallback", path, exc)
+            text = fallback_text or "Backend tijdelijk niet beschikbaar. Probeer opnieuw."
+            return {"data": {"summary": text, "requires_confirmation": False, "status": "error", "command_id": None}}
+
     async def _on_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG002
         if not self._is_authorized(update):
             await self._deny_access(update, "command_status")
             return
 
         self._log_user_action(update, "command_status", "success", {})
-        response = await self._backend.get("/api/v1/telegram/status")
+        fallback = self.status_callback() if self.status_callback else None
+        response = await self._backend_get("/api/v1/telegram/status", fallback_text=fallback)
         summary = response["data"]["summary"]
         if update.effective_message:
-            await update.effective_message.reply_text(summary[:4000], reply_markup=self._dashboard_keyboard())
+            await update.effective_message.reply_text(_truncate(summary), reply_markup=self._dashboard_keyboard())
 
     async def _on_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG002
         query = update.callback_query
@@ -213,6 +229,14 @@ class TelegramControlLayer:
         if not self._is_authorized(update):
             await self._deny_access(update, query.data or "unknown", query=query)
             return
+
+        user = update.effective_user
+        user_id = str(user.id) if user else "unknown"
+        now = time.monotonic()
+        if now - self._callback_last_time.get(user_id, 0.0) < 1.0:
+            await query.answer("Even geduld...", show_alert=False)
+            return
+        self._callback_last_time[user_id] = now
 
         data = query.data or ""
         try:
@@ -239,7 +263,7 @@ class TelegramControlLayer:
             self._log_user_action(update, data, "error", {"detail": str(exc)})
             await query.answer("Backend fout", show_alert=True)
             await query.edit_message_text(
-                f"Actie mislukt:\n{exc.response.text[:3500]}",
+                _truncate(f"Actie mislukt:\n{exc.response.text}"),
                 reply_markup=self._main_menu_keyboard(),
             )
         except Exception as exc:  # pragma: no cover - defensive
@@ -247,12 +271,16 @@ class TelegramControlLayer:
             self._log_user_action(update, data, "error", {"detail": str(exc)})
             await query.answer("Onverwachte fout", show_alert=True)
             await query.edit_message_text(
-                f"Onverwachte fout:\n{str(exc)[:3500]}",
+                _truncate(f"Onverwachte fout:\n{str(exc)}"),
                 reply_markup=self._main_menu_keyboard(),
             )
 
     async def _handle_confirmation(self, update: Update, query, data: str) -> None:
-        _, action, decision = data.split(":", 2)
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            await query.answer("Ongeldige bevestiging", show_alert=True)
+            return
+        _, action, decision = parts
         if decision == "no":
             self._log_user_action(update, f"{action}_cancelled", "cancelled", {})
             await query.answer("Geannuleerd")
@@ -263,25 +291,30 @@ class TelegramControlLayer:
             return
 
         payload = self._identity_payload(update, confirmed=True)
-        response = await self._backend.post(f"/api/v1/telegram/control/{action}", payload)
+        stop_fallback = self.stop_callback() if action in ("emergency_stop", "stop_bot") and self.stop_callback else None
+        response = await self._backend_post(f"/api/v1/telegram/control/{action}", payload, fallback_text=stop_fallback)
         text = response["data"]["summary"]
         self._log_user_action(update, action, "confirmed", {"response": text})
         await query.answer("Bevestigd")
-        await query.edit_message_text(text[:4000], reply_markup=self._menu_keyboard("control"))
+        await query.edit_message_text(_truncate(text), reply_markup=self._menu_keyboard("control"))
 
     async def _handle_action(self, update: Update, query, data: str) -> None:
+        await query.answer()
         if data == "status:overview":
-            response = await self._backend.get("/api/v1/telegram/status")
+            fallback = self.status_callback() if self.status_callback else None
+            response = await self._backend_get("/api/v1/telegram/status", fallback_text=fallback)
             text = response["data"]["summary"]
             keyboard = self._dashboard_keyboard()
         elif data.startswith("status:"):
-            response = await self._backend.get("/api/v1/telegram/status")
+            fallback = self.status_callback() if self.status_callback else None
+            response = await self._backend_get("/api/v1/telegram/status", fallback_text=fallback)
             text = self._format_status_detail(data.split(":", 1)[1], response["data"])
             keyboard = self._dashboard_keyboard()
         elif data.startswith("control:"):
             action = data.split(":", 1)[1]
             payload = self._identity_payload(update)
-            response = await self._backend.post(f"/api/v1/telegram/control/{action}", payload)
+            stop_fallback = self.stop_callback() if action in ("emergency_stop", "stop_bot") and self.stop_callback else None
+            response = await self._backend_post(f"/api/v1/telegram/control/{action}", payload, fallback_text=stop_fallback)
             result = response["data"]
             if result.get("requires_confirmation"):
                 self._log_user_action(update, action, "confirmation_required", {})
@@ -295,12 +328,12 @@ class TelegramControlLayer:
             keyboard = self._menu_keyboard("control")
         elif data.startswith("risk:"):
             section = data.split(":", 1)[1]
-            response = await self._backend.get(f"/api/v1/telegram/risk/{section}")
+            response = await self._backend_get(f"/api/v1/telegram/risk/{section}")
             text = response["data"]["summary"]
             keyboard = self._menu_keyboard("risk")
         elif data.startswith("signals_toggle:"):
             enabled = data.endswith(":on")
-            response = await self._backend.post(
+            response = await self._backend_post(
                 "/api/v1/telegram/signals/toggle",
                 {**self._identity_payload(update), "enabled": enabled},
             )
@@ -308,51 +341,55 @@ class TelegramControlLayer:
             keyboard = self._menu_keyboard("signals")
         elif data.startswith("signals:"):
             section = data.split(":", 1)[1]
-            response = await self._backend.get(f"/api/v1/telegram/signals/{section}")
+            response = await self._backend_get(f"/api/v1/telegram/signals/{section}")
             text = response["data"]["summary"]
             keyboard = self._menu_keyboard("signals")
         elif data == "backtest:quick_run":
-            response = await self._backend.post("/api/v1/telegram/backtest/quick-run", self._identity_payload(update))
+            response = await self._backend_post("/api/v1/telegram/backtest/quick-run", self._identity_payload(update))
             text = response["data"]["summary"]
             keyboard = self._menu_keyboard("backtest")
         elif data == "backtest:latest":
-            response = await self._backend.get("/api/v1/telegram/backtest/latest")
+            response = await self._backend_get("/api/v1/telegram/backtest/latest")
             text = response["data"]["summary"]
             keyboard = self._menu_keyboard("backtest")
         elif data == "backtest:compare":
-            response = await self._backend.get("/api/v1/telegram/backtest/compare")
+            response = await self._backend_get("/api/v1/telegram/backtest/compare")
             text = response["data"]["summary"]
             keyboard = self._menu_keyboard("backtest")
         elif data == "backtest:equity_curve":
-            response = await self._backend.get("/api/v1/telegram/backtest/equity-curve-summary")
+            response = await self._backend_get("/api/v1/telegram/backtest/equity-curve-summary")
             text = response["data"]["summary"]
             keyboard = self._menu_keyboard("backtest")
         elif data == "memory:train":
-            response = await self._backend.post("/api/v1/telegram/memory/train", self._identity_payload(update))
+            train_fallback = self.train_callback() if self.train_callback else None
+            response = await self._backend_post("/api/v1/telegram/memory/train", self._identity_payload(update), fallback_text=train_fallback)
             text = response["data"]["summary"]
             keyboard = self._menu_keyboard("memory")
         elif data.startswith("memory:"):
             section = data.split(":", 1)[1]
-            response = await self._backend.get(f"/api/v1/telegram/memory/{section}")
+            response = await self._backend_get(f"/api/v1/telegram/memory/{section}")
             text = response["data"]["summary"]
             keyboard = self._menu_keyboard("memory")
         elif data.startswith("reports:"):
             section = data.split(":", 1)[1]
             if section == "export_trade_log":
-                response = await self._backend.post(
+                response = await self._backend_post(
                     "/api/v1/telegram/reports/export-trade-log",
                     self._identity_payload(update),
                 )
             else:
-                response = await self._backend.get(f"/api/v1/telegram/reports/{section}")
+                response = await self._backend_get(f"/api/v1/telegram/reports/{section}")
             text = response["data"]["summary"]
             keyboard = self._menu_keyboard("reports")
         else:
             raise ValueError(f"Unsupported callback: {data}")
 
         self._log_user_action(update, data, "success", {"summary": text[:500]})
-        await query.answer("Uitgevoerd")
-        await query.edit_message_text(text[:4000], reply_markup=keyboard)
+        try:
+            await query.edit_message_text(_truncate(text), reply_markup=keyboard)
+        except Exception as e:
+            if "Message is not modified" not in str(e):
+                raise
 
     async def _deny_access(self, update: Update, action: str, query=None) -> None:
         self._log_user_action(update, action, "denied", {"owner_user_id": self.owner_user_id})
@@ -526,14 +563,14 @@ class TelegramControlLayer:
     def _format_status_detail(self, field: str, data: dict[str, Any]) -> str:
         mapping = {
             "account_status": f"Account Status\n{data.get('account_status', 'unknown').upper()}",
-            "equity": f"Equity\n${float(data.get('equity', 0.0)):,.2f}",
-            "balance": f"Balance\n${float(data.get('balance', 0.0)):,.2f}",
-            "open_pnl": f"Open PnL\n${float(data.get('open_pnl', 0.0)):,.2f}",
-            "daily_pnl": f"Daily PnL\n${float(data.get('daily_pnl', 0.0)):,.2f}",
-            "weekly_pnl": f"Weekly PnL\n${float(data.get('weekly_pnl', 0.0)):,.2f}",
-            "monthly_pnl": f"Monthly PnL\n${float(data.get('monthly_pnl', 0.0)):,.2f}",
+            "equity": f"Equity\n€{float(data.get('equity', 0.0)):,.2f}",
+            "balance": f"Balance\n€{float(data.get('balance', 0.0)):,.2f}",
+            "open_pnl": f"Open PnL\n€{float(data.get('open_pnl', 0.0)):,.2f}",
+            "daily_pnl": f"Daily PnL\n€{float(data.get('daily_pnl', 0.0)):,.2f}",
+            "weekly_pnl": f"Weekly PnL\n€{float(data.get('weekly_pnl', 0.0)):,.2f}",
+            "monthly_pnl": f"Monthly PnL\n€{float(data.get('monthly_pnl', 0.0)):,.2f}",
             "drawdown": (
-                f"Drawdown\n${float(data.get('drawdown', 0.0)):,.2f}\n"
+                f"Drawdown\n€{float(data.get('drawdown', 0.0)):,.2f}\n"
                 f"{float(data.get('drawdown_pct', 0.0)):.2f}%"
             ),
             "ftmo_status": (

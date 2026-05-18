@@ -291,27 +291,45 @@ class BacktestService:
     # ─────────────────────────────────────────────────────────────
 
     def _fetch_data(self, start_date, end_date) -> pd.DataFrame:
-        """Haalt H1 XAUUSD data op via yfinance (GC=F)."""
+        """Haalt H1 XAUUSD data op via yfinance (GC=F).
+
+        Probeert maximaal 3 keer; bij een SQLite cache-fout wordt de cache
+        uitgeschakeld voor de herhalingspogingen.
+        """
         try:
             import yfinance as yf
         except ImportError:
             raise FileNotFoundError("yfinance niet beschikbaar — pip install yfinance")
 
-        # Extra buffer voor indicator warmup
         start_with_buffer = pd.Timestamp(start_date) - pd.Timedelta(days=90)
         end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1)
+        start_str = start_with_buffer.strftime("%Y-%m-%d")
+        end_str = end_ts.strftime("%Y-%m-%d")
 
-        try:
-            df = yf.download(
-                "GC=F",
-                start=start_with_buffer.strftime("%Y-%m-%d"),
-                end=end_ts.strftime("%Y-%m-%d"),
-                interval="1h",
-                progress=False,
-                auto_adjust=True,
-            )
-        except Exception as e:
-            raise FileNotFoundError(f"Data ophalen mislukt: {e}") from e
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                if attempt > 0:
+                    # Disable tz-cache to avoid SQLite temp-dir errors on retry
+                    try:
+                        yf.set_tz_cache_location(None)  # type: ignore[attr-defined]
+                    except AttributeError:
+                        pass
+
+                df = yf.download(
+                    "GC=F",
+                    start=start_str,
+                    end=end_str,
+                    interval="1h",
+                    progress=False,
+                    auto_adjust=True,
+                )
+                break
+            except Exception as e:
+                last_exc = e
+                logger.warning("yfinance poging %d mislukt: %s", attempt + 1, e)
+        else:
+            raise FileNotFoundError(f"Data ophalen mislukt na 3 pogingen: {last_exc}") from last_exc
 
         if df.empty:
             raise FileNotFoundError(

@@ -53,3 +53,15 @@ def require_telegram_api_key(
     if not expected or x_api_key != expected:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Telegram control API key")
     return x_api_key or ""
+
+
+def assert_telegram_owner(telegram_user_id: str, settings: Settings) -> None:
+    """Raise 403 if telegram_user_id does not match the configured owner.
+
+    Fails closed: if TELEGRAM_OWNER_USER_ID is not configured, every request is rejected.
+    """
+    owner = settings.telegram_owner_user_id.strip()
+    if not owner:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Telegram owner not configured")
+    if telegram_user_id != owner:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Unauthorized Telegram user")

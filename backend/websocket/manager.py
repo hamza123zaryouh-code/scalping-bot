@@ -53,7 +53,7 @@ class LiveConnection:
     websocket: WebSocket
     user_id: str
     role: str
-    subscriptions: set[str] = field(default_factory=lambda: set(CHANNELS))  # default: all channels
+    subscriptions: set[str] = field(default_factory=lambda: set(CHANNELS) - {"logs"})  # logs are opt-in
     connected_at: str = field(default_factory=lambda: datetime.now(_UTC).isoformat())
     ping_count: int = 0
 
@@ -152,6 +152,11 @@ class ConnectionManager:
         """Start the async event broadcaster. Call once from app lifespan."""
         current_loop = asyncio.get_running_loop()
         if self._loop is not current_loop:
+            # New event loop (e.g. repeated create_app() in tests) — discard all
+            # loop-bound objects from the old loop before recreating them.
+            if self._broadcaster_task is not None and not self._broadcaster_task.done():
+                self._broadcaster_task.cancel()
+            self._broadcaster_task = None
             self._loop = current_loop
             self._lock = asyncio.Lock()
             self._event_queue = asyncio.Queue(maxsize=500)

@@ -64,6 +64,10 @@ class XAUUSDSettings:
     telegram_owner_user_id: str
     telegram_control_api_key: str
     telegram_backend_base_url: str
+    max_trades_per_day: int
+    max_losses_per_day: int
+    signal_cooldown_minutes: int
+    max_spread_points: int
     train_every_days: int
     daily_report_hour_utc: int
     dashboard_host: str
@@ -200,6 +204,10 @@ def load_settings(base_dir: Path | None = None) -> XAUUSDSettings:
             _read("API_KEY", _read("SECRET_KEY", "")),
         ).strip(),
         telegram_backend_base_url=_read("TELEGRAM_BACKEND_BASE_URL", "http://127.0.0.1:8000").strip() or "http://127.0.0.1:8000",
+        max_trades_per_day=_read_int("AUTO_MAX_TRADES_PER_DAY", 5),
+        max_losses_per_day=_read_int("AUTO_MAX_LOSSES_PER_DAY", 3),
+        signal_cooldown_minutes=_read_int("DUPLICATE_SIGNAL_COOLDOWN_MINUTES", _read_int("AUTO_SIGNAL_COOLDOWN_MINUTES", 60)),
+        max_spread_points=_read_int("MAX_SPREAD_POINTS", _read_int("AUTO_MAX_SPREAD_POINTS", 350)),
         train_every_days=_read_int("AUTO_TRAIN_EVERY_DAYS", 7),
         daily_report_hour_utc=_read_int("AUTO_DAILY_REPORT_HOUR_UTC", 19),
         dashboard_host=_read("AUTO_DASHBOARD_HOST", "127.0.0.1").strip() or "127.0.0.1",

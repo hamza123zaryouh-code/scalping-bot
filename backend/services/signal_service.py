@@ -26,19 +26,21 @@ class SignalService:
             return None
         with suppress(Exception):
             state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-            last_trade_time = state.get("last_trade_time")
-            if last_trade_time:
-                side = "buy" if state.get("last_long_signal_time") == last_trade_time else "sell"
+            # Canonical keys written by AutonomousTradingSystem._record_signal()
+            last_signal: dict | None = state.get("last_signal")
+            last_signal_time: str | None = state.get("last_signal_time")
+            if last_signal and last_signal_time:
+                side = last_signal.get("side", "buy")
                 label = "LONG" if side == "buy" else "SHORT"
                 return LiveSignalResponse(
                     side=side,
                     entry_label=label,
-                    trigger_time=datetime.fromisoformat(last_trade_time),
+                    trigger_time=datetime.fromisoformat(last_signal.get("time", last_signal_time)),
                     atr_value=0.0,
                     reference_price=0.0,
-                    reason="Latest signal inferred from the live execution state.",
+                    reason=last_signal.get("reason", ""),
                     regime="unknown",
-                    confidence=0.0,
+                    confidence=float(last_signal.get("confidence", 0.0)),
                 )
         return None
 

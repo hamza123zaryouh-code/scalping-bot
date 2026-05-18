@@ -36,12 +36,21 @@ class AutonomousTradingSystem:
         self.memory.initialize()
         self.parameters = self.memory.load_strategy_parameters(self.settings.default_parameters)
         self.memory.save_strategy_parameters(self.parameters, source="bootstrap")
-        self.memory.set_bot_control_state(
-            bot_active=True,
-            trading_paused=False,
-            signals_enabled=True,
-            emergency_stop=False,
-        )
+        _existing_control = self.memory.get_runtime_state("bot_control")
+        if _existing_control is None:
+            self.memory.set_bot_control_state(
+                bot_active=True,
+                trading_paused=False,
+                signals_enabled=True,
+                emergency_stop=False,
+            )
+        else:
+            logger.info(
+                "Bot state preserved across restart — active=%s emergency_stop=%s paused=%s",
+                _existing_control.get("bot_active"),
+                _existing_control.get("emergency_stop"),
+                _existing_control.get("trading_paused"),
+            )
 
         self.brain = IntelligenceLayer(self.settings.model_artifact_path)
         self.engine = DataExecutionLayer(self.settings)
@@ -157,6 +166,28 @@ class AutonomousTradingSystem:
     def _run_cycle(self) -> None:
         try:
             control = self.memory.get_bot_control_state()
+            if not control.get("bot_active", True):
+                self._update_runtime_state(status="stopped")
+                return
+            # Hard guards before any market I/O — prevents unnecessary fetches and
+            # ensures paused/emergency state is respected even if bot_active was not
+            # cleared (e.g. manual DB edit or race condition).
+            if control.get("emergency_stop", False):
+                self._update_runtime_state(
+                    status="emergency_stop",
+                    trading_paused=True,
+                    emergency_stop=True,
+                    signals_enabled=control.get("signals_enabled", True),
+                )
+                return
+            if control.get("trading_paused", False):
+                self._update_runtime_state(
+                    status="paused",
+                    pause_reason="trading_paused",
+                    trading_paused=True,
+                    signals_enabled=control.get("signals_enabled", True),
+                )
+                return
             session_info = self.session_engine.get_session_info()
             if not session_info.is_valid_for_trading:
                 self._update_runtime_state(
@@ -242,24 +273,6 @@ class AutonomousTradingSystem:
                 self._update_runtime_state(status="news_lock", news_reason=news_decision.reason, equity=account.get("equity", 0.0))
                 return
 
-            if control.get("trading_paused", False) or control.get("emergency_stop", False):
-                pause_reason = "emergency_stop" if control.get("emergency_stop", False) else "trading_paused"
-                self._write_bot_state(account, session_info, sentiment_result, signal=None)
-                self._update_runtime_state(
-                    status="paused",
-                    pause_reason=pause_reason,
-                    equity=account.get("equity", 0.0),
-                    open_positions=account.get("open_positions", 0),
-                    last_signal="trading paused",
-                    sentiment_label=current_sentiment.label,
-                    sentiment_score=current_sentiment.score,
-                    session=session_info.session.value,
-                    circuit_breaker_active=cb_status.get("circuit_breaker_active", False),
-                    risk_multiplier=self.circuit_breaker.get_risk_multiplier(),
-                    signals_enabled=control.get("signals_enabled", True),
-                )
-                return
-
             # Haal V20 live config op (hot-reload vanuit live_strategy.json)
             _live_cfg = self.config_manager.get_strategy_cfg()
 
@@ -286,20 +299,41 @@ class AutonomousTradingSystem:
                 # Circuit breaker graduated protection: block disallowed signal types
                 if not self.circuit_breaker.is_signal_allowed(sig_type):
                     logger.info(
-                        "Signal blocked by circuit breaker (graduated stage %d): %s",
+                        "Trade geblokkeerd door circuit_breaker (stage %d): %s",
                         self.circuit_breaker.get_graduated_stage(), sig_type,
                     )
-                    self._update_runtime_state(status="running", last_signal="blocked by circuit breaker")
+                    self._update_runtime_state(status="running", last_signal="blocked: circuit_breaker")
                     return
                 if self._pattern_memory.is_blocked(sig_type, signal.side, h4_regime=h4_regime):
-                    logger.info("Signal blocked by pattern memory: %s %s (low win-rate setup)", sig_type, signal.side)
-                    self._update_runtime_state(status="running", last_signal="blocked by pattern memory")
+                    logger.info("Trade geblokkeerd door pattern_memory: %s %s", sig_type, signal.side)
+                    self._update_runtime_state(status="running", last_signal="blocked: pattern_memory")
                     return
+                # Hard pre-trade risk gates
+                allowed, gate_reason = self._can_open_trade(account)
+                if not allowed:
+                    logger.info(
+                        "Trade geblokkeerd door risk_gate: %s | signaal=%s %s %s",
+                        gate_reason, signal.side, sig_type, self.settings.symbol,
+                    )
+                    self._update_runtime_state(
+                        status="running",
+                        last_signal=f"blocked: {gate_reason}",
+                        balance=account.get("balance", 0.0),
+                        equity=account.get("equity", 0.0),
+                    )
+                    return
+                logger.info(
+                    "Trade openen: %s %s %s | gates=%s | risk_mult=%.0f%%",
+                    signal.side, sig_type, self.settings.symbol, gate_reason, risk_mult * 100,
+                )
                 execution = self.engine.execute_trade(
                     signal,
                     self.parameters,
                     account_equity=account.get("equity", 0.0),
                     risk_multiplier=risk_mult,
+                )
+                self.memory.set_runtime_state(
+                    "last_trade_opened_at", datetime.now(timezone.utc).isoformat()
                 )
                 self._ftmo_guard.record_trade_opened()
                 self._pattern_memory.record_trade_opened(
@@ -317,6 +351,7 @@ class AutonomousTradingSystem:
             self._update_runtime_state(
                 last_bar=latest_closed_bar,
                 status="running",
+                balance=account.get("balance", 0.0),
                 equity=account.get("equity", 0.0),
                 open_positions=account.get("open_positions", 0),
                 last_signal=signal.reason if signal else "geen signaal",
@@ -349,6 +384,8 @@ class AutonomousTradingSystem:
                     existing = json.loads(_BOT_STATE_PATH.read_text(encoding="utf-8"))
                 except Exception:
                     existing = {}
+            if not isinstance(existing, dict):
+                existing = {}
 
             signal_history = existing.get("signal_history", [])
             if not isinstance(signal_history, list):
@@ -372,7 +409,9 @@ class AutonomousTradingSystem:
                 "session": session_info.to_dict(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
-            _BOT_STATE_PATH.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
+            _tmp = _BOT_STATE_PATH.with_suffix(".tmp")
+            _tmp.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
+            _tmp.replace(_BOT_STATE_PATH)
         except Exception as exc:
             logger.debug("Bot state schrijven mislukt: %s", exc)
 
@@ -451,10 +490,13 @@ class AutonomousTradingSystem:
     def _process_control_commands(self) -> None:
         commands = self.memory.fetch_pending_control_commands(limit=20)
         for command in commands:
-            command_id = int(command["id"])
-            action = str(command["command"])
             try:
-                self.memory.update_control_command(command_id, "executing", result_message="Command in uitvoering.")
+                command_id = int(command["id"])
+                action = str(command["command"])
+            except (ValueError, TypeError):
+                logger.error("Malformed control command skipped: %s", command)
+                continue
+            try:
                 result = self._execute_control_command(action)
                 self.memory.update_control_command(command_id, "completed", result_message=result)
                 self.telegram.notify(result)
@@ -474,7 +516,13 @@ class AutonomousTradingSystem:
             self.memory.set_bot_control_state(trading_paused=True)
             return "Trading gepauzeerd. Open posities blijven beheerd."
         if action == "resume_trading":
-            self.memory.set_bot_control_state(bot_active=True, trading_paused=False, emergency_stop=False)
+            current = self.memory.get_bot_control_state()
+            if current.get("emergency_stop", False):
+                return (
+                    "Resume geweigerd: emergency stop is actief. "
+                    "Gebruik 'Start Bot' om de emergency stop te wissen."
+                )
+            self.memory.set_bot_control_state(bot_active=True, trading_paused=False)
             return "Trading hervat."
         if action == "emergency_stop":
             self.memory.set_bot_control_state(bot_active=False, trading_paused=True, emergency_stop=True)
@@ -483,6 +531,8 @@ class AutonomousTradingSystem:
             closed = self.engine.close_all_positions(symbol=self.settings.symbol, reason="telegram_close_all")
             for trade in closed:
                 self.memory.log_trade_close(trade)
+                self.circuit_breaker.record_trade_result(trade.pnl)
+                self._ftmo_guard.record_trade_closed(trade.pnl)
             return f"Alle posities gesloten: {len(closed)}."
         if action == "train_ai":
             outcome = self._run_training_cycle()
@@ -490,6 +540,56 @@ class AutonomousTradingSystem:
                 return "AI training overgeslagen: onvoldoende gesloten trades."
             return f"AI training voltooid. Accuracy={outcome.accuracy:.2%}, samples={outcome.sample_count}."
         raise ValueError(f"Unsupported control command: {action}")
+
+    # ──────────────────────────────────────────────────────────────
+    # PRE-TRADE RISK GATES
+    # ──────────────────────────────────────────────────────────────
+
+    def _can_open_trade(self, account: dict) -> tuple[bool, str]:
+        """
+        Hard risk gates evaluated before every execute_trade() call.
+        Returns (allowed, reason).  All decisions are logged so the
+        decision trail is always auditable.
+        """
+        now = datetime.now(timezone.utc)
+        today = now.date()
+
+        # Gate 1: max open positions (global, across all symbols)
+        open_trades = self.memory.list_open_trades(self.settings.symbol)
+        if len(open_trades) >= self.settings.max_open_positions:
+            return False, f"max_open_positions={self.settings.max_open_positions} bereikt ({len(open_trades)} open)"
+
+        # Gate 2: max trades per day (opened today — closed + still open)
+        daily = self.memory.daily_summary(today)
+        closed_today = int(daily.get("trade_count", 0))
+        opened_today = closed_today + len(open_trades)
+        if opened_today >= self.settings.max_trades_per_day:
+            return False, f"max_trades_per_day={self.settings.max_trades_per_day} bereikt ({opened_today} vandaag)"
+
+        # Gate 3: max losses per day  (approx from win-rate on closed trades)
+        wr = float(daily.get("win_rate", 1.0))
+        losses_today = round(closed_today * (1.0 - wr))
+        if losses_today >= self.settings.max_losses_per_day:
+            return False, f"max_losses_per_day={self.settings.max_losses_per_day} bereikt ({losses_today} verlies vandaag)"
+
+        # Gate 4: cooldown between trades
+        last_opened = self.memory.get_runtime_state("last_trade_opened_at")
+        if last_opened:
+            try:
+                elapsed_min = (now - datetime.fromisoformat(last_opened)).total_seconds() / 60
+                if elapsed_min < self.settings.signal_cooldown_minutes:
+                    return (
+                        False,
+                        f"cooldown actief: {elapsed_min:.0f}/{self.settings.signal_cooldown_minutes} min",
+                    )
+            except Exception:
+                pass
+
+        # Gate 5: broker connection — reject if account data unavailable
+        if not account.get("equity") and not account.get("balance"):
+            return False, "broker_data_unavailable (equity=0, balance=0)"
+
+        return True, "alle_gates_ok"
 
     def _format_trade_open_message(self, execution, signal, session_info, sentiment_result, risk_mult: float, sig_type: str) -> str:
         direction_emoji = "🟢 LONG" if execution.side.lower() == "buy" else "🔴 SHORT"
@@ -580,7 +680,9 @@ class AutonomousTradingSystem:
             state["last_signal"] = payload
             state["signal_history"] = history[-100:]
             _BOT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            _BOT_STATE_PATH.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
+            _tmp = _BOT_STATE_PATH.with_suffix(".tmp")
+            _tmp.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
+            _tmp.replace(_BOT_STATE_PATH)
         except Exception as exc:
             logger.debug("Signal history write failed: %s", exc)
 

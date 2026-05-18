@@ -206,18 +206,25 @@ class MemoryLayer:
             }
 
     def fetch_pending_control_commands(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Fetch and atomically claim pending commands (sets status→executing in same TX)."""
         with self.session_scope() as session:
             rows = session.scalars(
                 select(ControlCommand)
                 .where(ControlCommand.status == "pending")
                 .order_by(ControlCommand.created_at.asc(), ControlCommand.id.asc())
                 .limit(limit)
+                .with_for_update(skip_locked=True)
             ).all()
+            now = datetime.now(timezone.utc)
+            for row in rows:
+                row.status = "executing"
+                row.result_message = "Command in uitvoering."
+                row.executed_at = now
             return [
                 {
                     "id": row.id,
                     "command": row.command,
-                    "status": row.status,
+                    "status": "executing",
                     "requested_by": row.requested_by,
                     "payload": dict(row.payload or {}),
                     "source": row.source,

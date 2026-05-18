@@ -76,6 +76,33 @@ def test_quick_backtest_endpoint_uses_backend_service(api_client, monkeypatch):
     assert response.json()["data"]["summary"] == "Quick Backtest klaar"
 
 
+def test_resume_trading_rejected_when_emergency_stop_active(api_client):
+    """resume_trading must be rejected if emergency_stop is currently active."""
+    from backend.api.routes import telegram as telegram_route
+
+    # Activate emergency stop in the shared memory layer
+    telegram_route._service._memory.set_bot_control_state(
+        bot_active=False, trading_paused=True, emergency_stop=True
+    )
+
+    payload = {"telegram_user_id": "999", "telegram_username": "hamza", "confirmed": True}
+    response = api_client.post(
+        "/api/v1/telegram/control/resume_trading",
+        json=payload,
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    result = response.json()["data"]
+    assert result["status"] == "rejected"
+    assert "emergency stop" in result["summary"].lower()
+
+    # Restore neutral state so other tests are not affected
+    telegram_route._service._memory.set_bot_control_state(
+        bot_active=True, trading_paused=False, emergency_stop=False
+    )
+
+
 def test_compare_backtest_endpoint_uses_service(api_client, monkeypatch):
     from backend.api.routes import telegram as telegram_route
 

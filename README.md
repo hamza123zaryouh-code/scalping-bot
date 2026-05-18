@@ -13,7 +13,7 @@ Production-oriented XAUUSD trading workspace with:
 - The webapp only trusts server-verified backend JWTs
 - Insecure `alg: none` login fallback has been removed
 - WebSocket `/ws/live` now requires auth and no longer rebroadcasts arbitrary client payloads
-- Backtest API routes are intentionally disabled in this build and now documented as such
+- Backtest API routes are fully implemented under `/api/v1/backtest/*`
 - Analytics no longer perform database initialization in the request path
 
 ## Architecture and data flows
@@ -136,8 +136,11 @@ npm test
 
 ## Disabled / intentionally removed
 
-- Backtest API endpoints under `/api/v1/backtest/*` return `503 Service Unavailable`
 - Public registration stays disabled in this workspace
+
+## Backtest API
+
+Backtest endpoints under `/api/v1/backtest/*` are fully supported. Use `POST /api/v1/backtest/run` for synchronous runs or `POST /api/v1/backtest/run-async` for async execution with WebSocket progress tracking.
 
 ## Operational notes
 

@@ -20,9 +20,10 @@ from backend.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-STATE_PATH = Path("live_logs/bot_state.json")
-MEMORY_DIR = Path("memory")
-REPORTS_DIR = Path("reports")
+_ROOT = Path(__file__).resolve().parents[2]
+STATE_PATH = _ROOT / "live_logs" / "bot_state.json"
+MEMORY_DIR = _ROOT / "memory"
+REPORTS_DIR = _ROOT / "reports"
 
 FTMO_MONTHLY_TARGET = 8_000.0
 _DANGEROUS_ACTIONS = {"emergency_stop", "close_all_positions"}
@@ -41,8 +42,20 @@ class TelegramService:
         control = self._memory.get_bot_control_state()
         history = self._trade_history(limit=5000)
         runtime = self._memory.get_runtime_state("engine_status") or {}
-        account = state.get("balance") or runtime.get("balance") or self._settings.starting_capital
-        equity = state.get("equity") or runtime.get("equity") or account
+        orphaned = self._memory.get_runtime_state("orphaned_positions") or {}
+        _account_raw = state.get("balance")
+        if _account_raw is None:
+            _account_raw = runtime.get("balance")
+        if _account_raw is None:
+            _account_raw = self._settings.starting_capital
+        account = _account_raw
+
+        _equity_raw = state.get("equity")
+        if _equity_raw is None:
+            _equity_raw = runtime.get("equity")
+        if _equity_raw is None:
+            _equity_raw = account
+        equity = _equity_raw
         positions = state.get("open_positions", [])
         floating_pnl = round(sum(float(p.get("profit", 0.0)) for p in positions), 2)
         daily_pnl = self._period_pnl(history, "D")
@@ -52,20 +65,24 @@ class TelegramService:
         drawdown_pct = (drawdown / self._settings.starting_capital * 100) if self._settings.starting_capital else 0.0
         ftmo = self._ftmo_snapshot(state)
 
-        summary = "\n".join(
-            [
-                "STATUS",
-                f"Account status: {'RUNNING' if control.get('bot_active', True) else 'STOPPED'}",
-                f"Equity: {self._money(equity)}",
-                f"Balance: {self._money(account)}",
-                f"Open PnL: {self._money(floating_pnl)}",
-                f"Daily PnL: {self._money(daily_pnl)}",
-                f"Weekly PnL: {self._money(weekly_pnl)}",
-                f"Monthly PnL: {self._money(monthly_pnl)}",
-                f"Drawdown: {self._money(drawdown)} ({drawdown_pct:.2f}%)",
-                f"FTMO status: {ftmo['status']}",
-            ]
-        )
+        summary_lines = [
+            "STATUS",
+            f"Account status: {'RUNNING' if control.get('bot_active', True) else 'STOPPED'}",
+            f"Equity: {self._money(equity)}",
+            f"Balance: {self._money(account)}",
+            f"Open PnL: {self._money(floating_pnl)}",
+            f"Daily PnL: {self._money(daily_pnl)}",
+            f"Weekly PnL: {self._money(weekly_pnl)}",
+            f"Monthly PnL: {self._money(monthly_pnl)}",
+            f"Drawdown: {self._money(drawdown)} ({drawdown_pct:.2f}%)",
+            f"FTMO status: {ftmo['status']}",
+        ]
+        if orphaned.get("count", 0) > 0:
+            summary_lines.append(
+                f"WAARSCHUWING: {orphaned['count']} orphaned broker positie(s) niet in DB "
+                f"(gedetecteerd bij startup)"
+            )
+        summary = "\n".join(summary_lines)
         return {
             "summary": summary,
             "account_status": "running" if control.get("bot_active", True) else "stopped",
@@ -79,6 +96,7 @@ class TelegramService:
             "drawdown_pct": round(drawdown_pct, 2),
             "ftmo_status": ftmo,
             "control_state": control,
+            "orphaned_positions": orphaned,
         }
 
     def handle_control_action(
@@ -113,7 +131,27 @@ class TelegramService:
         elif action == "pause_trading":
             control_updates = {"trading_paused": True}
         elif action == "resume_trading":
-            control_updates = {"bot_active": True, "trading_paused": False, "emergency_stop": False}
+            current = self._memory.get_bot_control_state()
+            if current.get("emergency_stop", False):
+                self._log_action(
+                    telegram_user_id,
+                    telegram_username,
+                    action,
+                    "rejected",
+                    {"reason": "emergency_stop_active"},
+                )
+                return {
+                    "action": action,
+                    "status": "rejected",
+                    "summary": (
+                        "Resume geweigerd: emergency stop is actief. "
+                        "Gebruik 'Start Bot' om de emergency stop te wissen."
+                    ),
+                    "requires_confirmation": False,
+                    "command_id": None,
+                    "data": {"control_state": current},
+                }
+            control_updates = {"bot_active": True, "trading_paused": False}
         elif action == "emergency_stop":
             control_updates = {"bot_active": False, "trading_paused": True, "emergency_stop": True}
         elif action == "train_ai":
@@ -468,8 +506,14 @@ class TelegramService:
             return pd.DataFrame()
 
     def _ftmo_snapshot(self, state: dict[str, Any]) -> dict[str, Any]:
-        equity = float(state.get("equity", self._settings.starting_capital))
-        day_start = float(state.get("day_start_equity", self._settings.starting_capital))
+        try:
+            equity = float(state.get("equity", self._settings.starting_capital))
+        except (ValueError, TypeError):
+            equity = float(self._settings.starting_capital)
+        try:
+            day_start = float(state.get("day_start_equity", self._settings.starting_capital))
+        except (ValueError, TypeError):
+            day_start = float(self._settings.starting_capital)
         result = self._risk.compute_ftmo_buffers(
             equity=equity,
             day_start_equity=day_start,
@@ -495,7 +539,7 @@ class TelegramService:
         closed = pd.to_datetime(frame["closed_at"], utc=True, errors="coerce")
         now = pd.Timestamp.now(tz="UTC")
         if freq == "D":
-            mask = closed.dt.date == now.date()
+            mask = closed.dt.date == pd.Timestamp.now(tz="UTC").date()
         elif freq == "W":
             mask = closed.dt.isocalendar().week == now.isocalendar().week
             mask &= closed.dt.isocalendar().year == now.isocalendar().year

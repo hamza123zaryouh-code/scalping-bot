@@ -29,6 +29,9 @@ def configured_test_environment(monkeypatch, tmp_path):
     monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
     monkeypatch.setenv("BOT_MODE", "paper")
     monkeypatch.setenv("POSTGRES_URL", f"sqlite:///{(tmp_path / 'autonomous-test.db').as_posix()}")
+    # Telegram test isolation: pin owner and API key so tests never depend on a real .env
+    monkeypatch.setenv("TELEGRAM_OWNER_USER_ID", "999")
+    monkeypatch.setenv("TELEGRAM_CONTROL_API_KEY", "test_secret_key_32_characters_long")
     get_settings.cache_clear()
     telegram_route._service = TelegramService()
     telegram_route._service_db_url = load_settings().database_url

@@ -1,11 +1,13 @@
 """Telegram control endpoints used by the inline keyboard bot."""
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from backend.api.deps import require_telegram_api_key
+from backend.api.deps import assert_telegram_owner, require_telegram_api_key
+from backend.core.config import Settings, get_settings
 from backend.api.schemas.common import APIResponse
 from backend.api.schemas.telegram import (
     TelegramActionRequest,
@@ -13,19 +15,19 @@ from backend.api.schemas.telegram import (
     TelegramToggleRequest,
 )
 from backend.services.telegram_service import TelegramService
-from autonomous_xauusd.settings import load_settings
+from autonomous_xauusd.settings import load_settings as _load_bot_settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-_service = TelegramService()
-_service_db_url = load_settings().database_url
+_service: TelegramService | None = None
+_service_db_url: str = ""
 
 
 def _get_service() -> TelegramService:
     global _service, _service_db_url
 
-    db_url = load_settings().database_url
-    if _service_db_url != db_url:
+    db_url = _load_bot_settings().database_url
+    if _service is None or _service_db_url != db_url:
         _service = TelegramService()
         _service_db_url = db_url
     return _service
@@ -41,7 +43,9 @@ async def telegram_control(
     action: str,
     payload: TelegramActionRequest,
     _key: str = Depends(require_telegram_api_key),
+    settings: Settings = Depends(get_settings),
 ):
+    assert_telegram_owner(payload.telegram_user_id, settings)
     try:
         result = _get_service().handle_control_action(
             action=action,
@@ -75,7 +79,9 @@ async def telegram_signals(section: str, _key: str = Depends(require_telegram_ap
 async def telegram_toggle_signals(
     payload: TelegramToggleRequest,
     _key: str = Depends(require_telegram_api_key),
+    settings: Settings = Depends(get_settings),
 ):
+    assert_telegram_owner(payload.telegram_user_id, settings)
     result = _get_service().toggle_signals(
         enabled=payload.enabled,
         telegram_user_id=payload.telegram_user_id,
@@ -88,8 +94,20 @@ async def telegram_toggle_signals(
 async def telegram_quick_backtest(
     payload: TelegramActionRequest,
     _key: str = Depends(require_telegram_api_key),
+    settings: Settings = Depends(get_settings),
 ):
-    result = _get_service().run_quick_backtest(payload.telegram_user_id, payload.telegram_username)
+    assert_telegram_owner(payload.telegram_user_id, settings)
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                _get_service().run_quick_backtest,
+                payload.telegram_user_id,
+                payload.telegram_username,
+            ),
+            timeout=300.0,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Backtest timed out after 5 minutes")
     return APIResponse(data=result, message=result["summary"])
 
 
@@ -115,7 +133,9 @@ async def telegram_backtest_equity_curve(_key: str = Depends(require_telegram_ap
 async def telegram_train_ai(
     payload: TelegramActionRequest,
     _key: str = Depends(require_telegram_api_key),
+    settings: Settings = Depends(get_settings),
 ):
+    assert_telegram_owner(payload.telegram_user_id, settings)
     result = _get_service().handle_control_action(
         action="train_ai",
         telegram_user_id=payload.telegram_user_id,
@@ -147,7 +167,9 @@ async def telegram_report(period: str, _key: str = Depends(require_telegram_api_
 async def telegram_export_trade_log(
     payload: TelegramActionRequest,
     _key: str = Depends(require_telegram_api_key),
+    settings: Settings = Depends(get_settings),
 ):
+    assert_telegram_owner(payload.telegram_user_id, settings)
     result = _get_service().export_trade_log(payload.telegram_user_id, payload.telegram_username)
     return APIResponse(data=result, message=result["summary"])
 

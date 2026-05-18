@@ -363,7 +363,6 @@ class DataExecutionLayer:
                 "price": price,
                 "deviation": self.settings.max_slippage_points,
                 "magic": self.settings.magic_number,
-                "comment": f"{self.settings.order_comment} {reason}",
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }

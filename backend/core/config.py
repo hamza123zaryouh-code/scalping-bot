@@ -165,11 +165,7 @@ class Settings(BaseSettings):
 
     @property
     def telegram_api_key(self) -> str:
-        return (
-            self.telegram_control_api_key.strip()
-            or (self.api_key or "").strip()
-            or (self.secret_key or "").strip()
-        )
+        return self.telegram_control_api_key.strip() or (self.api_key or "").strip()
 
     @property
     def mt5_ready(self) -> bool:

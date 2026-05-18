@@ -159,6 +159,7 @@ def _pre_flight_checks(mode: str) -> None:
 def main() -> None:
     args = _parse_args()
     Path("live_logs").mkdir(parents=True, exist_ok=True)
+    _acquire_single_instance_lock()
     _setup_logging(args.log_level)
     logger = logging.getLogger("run_live_bot")
 
