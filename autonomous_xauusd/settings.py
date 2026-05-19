@@ -84,6 +84,10 @@ class XAUUSDSettings:
     ftmo_max_total_drawdown: float
     ftmo_daily_buffer: float
     max_lot_size: float
+    max_portfolio_heat: float       # max totaal open risico als % van equity (bijv. 0.06 = 6%)
+    max_correlated_positions: int   # max gelijktijdige posities in EURUSD+GBPUSD in dezelfde richting
+    kelly_fraction: float           # Kelly-fractie (0.25 = quarter-Kelly; 0 = uitgeschakeld)
+    kelly_lookback_trades: int      # Aantal historische trades voor Kelly-berekening
 
     @property
     def mt5_ready(self) -> bool:
@@ -238,4 +242,8 @@ def load_settings(base_dir: Path | None = None) -> XAUUSDSettings:
         ftmo_max_total_drawdown=_read_float("FTMO_MAX_TOTAL_DRAWDOWN", 16_000.0),
         ftmo_daily_buffer=_read_float("FTMO_DAILY_BUFFER", 400.0),
         max_lot_size=_read_float("MAX_LOT_SIZE", 6.0),
+        max_portfolio_heat=_read_float("AUTO_MAX_PORTFOLIO_HEAT", 0.06),
+        max_correlated_positions=_read_int("AUTO_MAX_CORRELATED_POSITIONS", 1),
+        kelly_fraction=_read_float("AUTO_KELLY_FRACTION", 0.25),
+        kelly_lookback_trades=_read_int("AUTO_KELLY_LOOKBACK_TRADES", 50),
     )

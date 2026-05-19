@@ -104,6 +104,10 @@ class TelegramControlLayer:
         status_callback: Callable[[], str],
         stop_callback: Callable[[], str],
         train_callback: Callable[[], str],
+        ping_callback: Callable[[], str] | None = None,
+        logs_callback: Callable[[], str] | None = None,
+        heat_callback: Callable[[], str] | None = None,
+        restart_callback: Callable[[], str] | None = None,
     ) -> None:
         self.token = token
         self.chat_id = chat_id
@@ -111,6 +115,10 @@ class TelegramControlLayer:
         self.status_callback = status_callback
         self.stop_callback = stop_callback
         self.train_callback = train_callback
+        self.ping_callback = ping_callback
+        self.logs_callback = logs_callback
+        self.heat_callback = heat_callback
+        self.restart_callback = restart_callback
         self.enabled = bool(token and chat_id and TELEGRAM_AVAILABLE)
         self._thread: threading.Thread | None = None
         self._thread_lock = threading.Lock()
@@ -195,6 +203,12 @@ class TelegramControlLayer:
         application.add_handler(CommandHandler("start", self._on_start))
         application.add_handler(CommandHandler("menu", self._on_start))
         application.add_handler(CommandHandler("status", self._on_status))
+        application.add_handler(CommandHandler("ping", self._on_ping))
+        application.add_handler(CommandHandler("logs", self._on_logs))
+        application.add_handler(CommandHandler("heat", self._on_heat))
+        application.add_handler(CommandHandler("restart", self._on_restart))
+        application.add_handler(CommandHandler("systeem", self._on_systeem))
+        application.add_handler(CommandHandler("help", self._on_help))
         application.add_handler(CallbackQueryHandler(self._on_callback))
 
         await application.initialize()
@@ -351,6 +365,91 @@ class TelegramControlLayer:
         if update.effective_message:
             await update.effective_message.reply_text(_truncate(summary), reply_markup=self._dashboard_keyboard())
 
+    async def _on_ping(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG002
+        if not self._is_authorized(update):
+            await self._deny_access(update, "ping")
+            return
+        self._log_user_action(update, "ping", "success", {})
+        text = self.ping_callback() if self.ping_callback else "PONG — Bot actief"
+        if update.effective_message:
+            await update.effective_message.reply_text(_truncate(text))
+
+    async def _on_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG002
+        if not self._is_authorized(update):
+            await self._deny_access(update, "logs")
+            return
+        self._log_user_action(update, "logs", "success", {})
+        text = self.logs_callback() if self.logs_callback else "Logs callback niet geconfigureerd."
+        if update.effective_message:
+            await update.effective_message.reply_text(_truncate(text))
+
+    async def _on_heat(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG002
+        if not self._is_authorized(update):
+            await self._deny_access(update, "heat")
+            return
+        self._log_user_action(update, "heat", "success", {})
+        text = self.heat_callback() if self.heat_callback else "Heat callback niet geconfigureerd."
+        if update.effective_message:
+            await update.effective_message.reply_text(_truncate(text))
+
+    async def _on_restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG002
+        if not self._is_authorized(update):
+            await self._deny_access(update, "restart")
+            return
+        self._log_user_action(update, "restart", "pending_confirm", {})
+        if update.effective_message:
+            await update.effective_message.reply_text(
+                "Weet je zeker dat je de bot wilt herstarten?\n"
+                "Bot stopt (exit code 1) en wordt automatisch herstart door vps_startup.bat.",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("JA, herstart", callback_data="confirm:restart_bot:yes"),
+                        InlineKeyboardButton("Annuleer", callback_data="confirm:restart_bot:no"),
+                    ]
+                ]),
+            )
+
+    async def _on_systeem(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG002
+        if not self._is_authorized(update):
+            await self._deny_access(update, "systeem")
+            return
+        self._log_user_action(update, "systeem_menu", "success", {})
+        if update.effective_message:
+            await update.effective_message.reply_text(
+                "Systeem beheer — kies een actie:",
+                reply_markup=self._systeem_keyboard(),
+            )
+
+    async def _on_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG002
+        if not self._is_authorized(update):
+            await self._deny_access(update, "help")
+            return
+        help_text = (
+            "XAUUSD Bot — Beschikbare commando's\n"
+            "\n"
+            "BASICS\n"
+            "  /start of /menu — Hoofdmenu openen\n"
+            "  /status        — Bot status overzicht\n"
+            "  /ping          — Controleer of bot actief is\n"
+            "\n"
+            "SYSTEEM\n"
+            "  /logs          — Laatste 40 regels logbestand\n"
+            "  /heat          — Portfolio heat (open risico%)\n"
+            "  /restart       — Bot herstarten via watchdog\n"
+            "  /systeem       — Systeem menu\n"
+            "\n"
+            "MENU SECTIES (via /menu knoppen)\n"
+            "  Dashboard      — Equity, PnL, FTMO status\n"
+            "  Bot Control    — Start/Stop/Pause/Resume\n"
+            "  Risk Control   — FTMO regels, drawdown\n"
+            "  Signals        — Laatste signalen\n"
+            "  AI Memory      — ML model trainen\n"
+            "  Backtest       — Backtests uitvoeren\n"
+            "  Reports        — Dag/week/maand rapporten\n"
+        )
+        if update.effective_message:
+            await update.effective_message.reply_text(help_text, reply_markup=self._main_menu_keyboard())
+
     async def _on_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG002
         query = update.callback_query
         if query is None:
@@ -426,6 +525,14 @@ class TelegramControlLayer:
             )
             return
 
+        # Systeem herstart — lokaal afhandelen, geen backend nodig
+        if action == "restart_bot":
+            self._log_user_action(update, action, "confirmed", {})
+            text = self.restart_callback() if self.restart_callback else "Herstart niet geconfigureerd."
+            await query.answer("Bevestigd")
+            await query.edit_message_text(_truncate(text), reply_markup=self._systeem_keyboard())
+            return
+
         payload = self._identity_payload(update, confirmed=True)
         stop_fallback = (
             self.stop_callback() if action in ("emergency_stop", "stop_bot") and self.stop_callback else None
@@ -496,6 +603,9 @@ class TelegramControlLayer:
         if data.startswith("reports:"):
             return await self._dispatch_reports(update, data)
 
+        if data.startswith("systeem:"):
+            return await self._dispatch_systeem(update, data)
+
         raise ValueError(f"Unsupported callback: {data}")
 
     async def _dispatch_control(self, update: Update, data: str) -> tuple[str, Any]:
@@ -528,6 +638,30 @@ class TelegramControlLayer:
         else:
             response = await self._backend_get(path)
         return response["data"]["summary"], self._menu_keyboard("backtest")
+
+    async def _dispatch_systeem(self, update: Update, data: str) -> tuple[str, Any]:
+        action = data.split(":", 1)[1]
+        if action == "ping":
+            text = self.ping_callback() if self.ping_callback else "PONG"
+            return _truncate(text), self._systeem_keyboard()
+        if action == "logs":
+            text = self.logs_callback() if self.logs_callback else "Geen logs"
+            return _truncate(text), self._systeem_keyboard()
+        if action == "heat":
+            text = self.heat_callback() if self.heat_callback else "Geen heat data"
+            return _truncate(text), self._systeem_keyboard()
+        if action == "restart":
+            return (
+                "Weet je zeker dat je de bot wilt herstarten?\n"
+                "Bot stopt (exit code 1) en vps_startup.bat herstart automatisch.",
+                InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("JA, herstart", callback_data="confirm:restart_bot:yes"),
+                        InlineKeyboardButton("Annuleer", callback_data="confirm:restart_bot:no"),
+                    ]
+                ]),
+            )
+        raise ValueError(f"Unsupported systeem action: {action}")
 
     async def _dispatch_reports(self, update: Update, data: str) -> tuple[str, Any]:
         section = data.split(":", 1)[1]
@@ -600,6 +734,7 @@ class TelegramControlLayer:
             "memory": "🧠 AI Memory",
             "backtest": "🧪 Backtest",
             "reports": "📄 Reports",
+            "systeem": "🖥 Systeem Beheer",
         }
         return f"{titles.get(section, 'Control')}\nKies een actie:"
 
@@ -613,6 +748,7 @@ class TelegramControlLayer:
                 [InlineKeyboardButton("🧠 AI Memory", callback_data="menu:memory")],
                 [InlineKeyboardButton("🧪 Backtest", callback_data="menu:backtest")],
                 [InlineKeyboardButton("📄 Reports", callback_data="menu:reports")],
+                [InlineKeyboardButton("🖥 Systeem", callback_data="menu:systeem")],
             ]
         )
 
@@ -727,6 +863,17 @@ class TelegramControlLayer:
             ]
         )
 
+    def _systeem_keyboard(self):
+        return InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("Ping (Is bot actief?)", callback_data="systeem:ping")],
+                [InlineKeyboardButton("Laatste Logs (40 regels)", callback_data="systeem:logs")],
+                [InlineKeyboardButton("Portfolio Heat", callback_data="systeem:heat")],
+                [InlineKeyboardButton("Herstart Bot", callback_data="systeem:restart")],
+                [InlineKeyboardButton("⬅️ Main Menu", callback_data="menu:main")],
+            ]
+        )
+
     def _menu_keyboard(self, section: str):
         mapping = {
             "dashboard": self._dashboard_keyboard,
@@ -736,6 +883,7 @@ class TelegramControlLayer:
             "memory": self._memory_keyboard,
             "backtest": self._backtest_keyboard,
             "reports": self._reports_keyboard,
+            "systeem": self._systeem_keyboard,
         }
         return mapping.get(section, self._main_menu_keyboard)()
 

@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from core.circuit_breaker_singleton import get_circuit_breaker
 from core.strategy_engine import get_symbol_cfg, SYMBOL_SPECS
+
+# Gecorreleerde groep: EURUSD en GBPUSD bewegen sterk samen (beide USD major pairs)
+_CORRELATED_GROUP: frozenset[str] = frozenset({"EURUSD", "GBPUSD"})
 from core.config_watcher import StrategyConfigManager
 from core.ftmo_guard import FTMOConfig, FTMOGuard, get_ftmo_guard
 from core.sentiment_engine import SentimentEngine
@@ -87,6 +93,9 @@ class AutonomousTradingSystem:
         self.last_processed_bar: dict[str, str | None] = {}  # per symbool
         self._open_trade_patterns: dict[str, tuple[str, str, str, str]] = {}  # ticket → (sig_type, side, h4_regime, session)
 
+        self._started_at = datetime.now(timezone.utc)
+        self._restart_requested = False
+
         self.telegram = TelegramControlLayer(
             token=self.settings.telegram_bot_token,
             chat_id=self.settings.telegram_chat_id,
@@ -96,6 +105,10 @@ class AutonomousTradingSystem:
             status_callback=self._status_text,
             stop_callback=self.request_stop,
             train_callback=self.train_now,
+            ping_callback=self._ping_text,
+            logs_callback=self._logs_text,
+            heat_callback=self._heat_text,
+            restart_callback=self.request_restart,
         )
 
     def request_stop(self) -> str:
@@ -110,6 +123,66 @@ class AutonomousTradingSystem:
             f"Model hertraind op {outcome.sample_count} trades. "
             f"Accuracy={outcome.accuracy:.2%}, nieuwe overrides={outcome.parameter_overrides or 'geen'}"
         )
+
+    def _ping_text(self) -> str:
+        now = datetime.now(timezone.utc)
+        uptime = now - self._started_at
+        hours, rem = divmod(int(uptime.total_seconds()), 3600)
+        mins = rem // 60
+        runtime = self.memory.get_runtime_state("engine_status") or {}
+        status = runtime.get("status", "onbekend")
+        equity = float(runtime.get("equity", 0.0))
+        open_pos = int(runtime.get("open_positions", 0))
+        return (
+            f"PONG — Bot is actief\n"
+            f"Status:   {status}\n"
+            f"Uptime:   {hours}u {mins}m\n"
+            f"Equity:   EUR {equity:,.2f}\n"
+            f"Posities: {open_pos} open\n"
+            f"Tijd:     {now.strftime('%d %b %H:%M:%S')} UTC"
+        )
+
+    def _logs_text(self, n_lines: int = 40) -> str:
+        log_path = Path("live_logs/runtime.log")
+        if not log_path.exists():
+            return "Geen logbestand gevonden (live_logs/runtime.log)."
+        try:
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            recent = lines[-n_lines:] if len(lines) > n_lines else lines
+            return "LAATSTE LOGS\n" + "\n".join(recent)
+        except Exception as exc:
+            return f"Logbestand kon niet worden gelezen: {exc}"
+
+    def _heat_text(self) -> str:
+        runtime = self.memory.get_runtime_state("engine_status") or {}
+        equity = float(runtime.get("equity", 0.0))
+        if equity <= 0:
+            return "Equity niet beschikbaar — kan heat niet berekenen."
+        heat = self._compute_portfolio_heat(equity)
+        max_heat = self.settings.max_portfolio_heat
+        status_icon = "VEILIG" if heat < max_heat * 0.7 else ("WAARSCHUWING" if heat < max_heat else "KRITIEK")
+        open_risks = []
+        for sym in self.settings.symbols:
+            from core.strategy_engine import SYMBOL_SPECS
+            lot_factor = float(SYMBOL_SPECS.get(sym, {}).get("lot_factor", 100))
+            for trade in self.memory.list_open_trades(sym):
+                sl_dist = abs(float(trade.get("entry_price", 0)) - float(trade.get("stop_loss", 0)))
+                vol = float(trade.get("volume", 0))
+                risk_eur = sl_dist * vol * lot_factor
+                open_risks.append(f"  {sym} {trade.get('side','?')} {vol}L → EUR {risk_eur:,.0f} risico")
+        lines = [
+            f"PORTFOLIO HEAT: {heat:.2%} / {max_heat:.0%} max — {status_icon}",
+            f"Equity: EUR {equity:,.2f}",
+            "",
+            f"Open posities ({len(open_risks)}):",
+        ] + (open_risks if open_risks else ["  Geen open posities"])
+        return "\n".join(lines)
+
+    def request_restart(self) -> str:
+        self.memory.set_bot_control_state(bot_active=False, trading_paused=True, emergency_stop=True)
+        self.stop_requested = True
+        self._restart_requested = True
+        return "Herstart gevraagd. Bot stopt en wordt opnieuw gestart door watchdog."
 
     def _status_text(self) -> str:
         runtime = self.memory.get_runtime_state("engine_status") or {}
@@ -175,6 +248,10 @@ class AutonomousTradingSystem:
                     "stopped_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
+            # Herstart-verzoek via Telegram: exit code 1 zodat vps_startup.bat herstart
+            if self._restart_requested:
+                logger.info("Herstart gevraagd — exit code 1 (watchdog zal opnieuw starten)")
+                sys.exit(1)
 
     def _run_cycle(self) -> None:
         try:
@@ -342,11 +419,17 @@ class AutonomousTradingSystem:
     ) -> None:
         """Voer een goedgekeurd signaal uit en log alle lagen."""
         risk_mult = self.circuit_breaker.get_risk_multiplier()
-        logger.info("Trade openen: %s %s %s | risk_mult=%.0f%%", signal.side, sig_type, sym, risk_mult * 100)
+        kelly_mult = self._compute_kelly_multiplier(sig_type)
+        # Combineer circuit breaker + Kelly multiplier; Kelly kan risico verhogen (max 1.3) of verlagen (min 0.5)
+        final_risk_mult = round(float(np.clip(risk_mult * kelly_mult, 0.0, 1.3)), 3)
+        logger.info(
+            "Trade openen: %s %s %s | risk_mult=%.0f%% kelly_mult=%.0f%% final=%.0f%%",
+            signal.side, sig_type, sym, risk_mult * 100, kelly_mult * 100, final_risk_mult * 100,
+        )
         execution = self.engine.execute_trade(
             signal, self.parameters,
             account_equity=account.get("equity", 0.0),
-            risk_multiplier=risk_mult,
+            risk_multiplier=final_risk_mult,
         )
         self.memory.set_runtime_state(f"last_trade_opened_at_{sym}", datetime.now(timezone.utc).isoformat())
         self._ftmo_guard.record_trade_opened()
@@ -358,7 +441,7 @@ class AutonomousTradingSystem:
         )
         self.memory.log_trade_open(execution, sentiment_score=current_sentiment.score)
         self.telegram.notify(
-            self._format_trade_open_message(execution, signal, session_info, sentiment_result, risk_mult, sig_type)
+            self._format_trade_open_message(execution, signal, session_info, sentiment_result, final_risk_mult, sig_type)
         )
 
     def _log_no_signal_reason(self, sym: str, enriched, sym_cfg: dict | None) -> None:
@@ -472,6 +555,24 @@ class AutonomousTradingSystem:
                 sym, sig_type, signal.side,
             )
             return
+
+        # Correlation filter: EURUSD en GBPUSD zijn sterk gecorreleerde USD-pairs.
+        # Blokkeer een nieuwe positie als er al max_correlated_positions in dezelfde richting open zijn.
+        if sym in _CORRELATED_GROUP and self.settings.max_correlated_positions > 0:
+            same_dir_count = sum(
+                1
+                for other_sym in _CORRELATED_GROUP
+                if other_sym != sym
+                for trade in self.memory.list_open_trades(other_sym)
+                if trade.get("side") == signal.side
+            )
+            if same_dir_count >= self.settings.max_correlated_positions:
+                logger.info(
+                    "[WAIT: correlation_filter] %s %s geblokkeerd — %d gecorreleerde %s positie(s) al open",
+                    sym, signal.side, same_dir_count, signal.side,
+                )
+                return
+
         allowed, gate_reason = self._can_open_trade(account, sym)
         if not allowed:
             logger.info("[WAIT: risk_gate] %s — %s %s %s", gate_reason, signal.side, sig_type, sym)
@@ -821,6 +922,70 @@ class AutonomousTradingSystem:
     # PRE-TRADE RISK GATES
     # ──────────────────────────────────────────────────────────────
 
+    def _compute_kelly_multiplier(self, sig_type: str) -> float:
+        """
+        Berekent een risico-multiplier op basis van quarter-Kelly formule.
+        Gebruikt historische trades om win rate en gem. R:R te berekenen.
+        Retourneert een multiplier in [0.5, 1.3] — schaalt bestaande risk_pct.
+
+        Kelly formula: f* = (p × b - q) / b
+          p = win rate, q = 1-p, b = gem_win / gem_verlies (R:R verhouding)
+        Quarter-Kelly: f = f* × kelly_fraction
+        """
+        if self.settings.kelly_fraction <= 0:
+            return 1.0
+        try:
+            history = self.memory.trade_history(limit=self.settings.kelly_lookback_trades * 2)
+            if history.empty or len(history) < 20:
+                return 1.0
+            closed = history[history["pnl"].notna()] if "pnl" in history.columns else history
+            if "signal_type" in closed.columns and sig_type:
+                sig_history = closed[closed["signal_type"] == sig_type]
+                if len(sig_history) >= 15:
+                    closed = sig_history
+            pnls = closed["pnl"].dropna() if "pnl" in closed.columns else pd.Series(dtype=float)
+            if len(pnls) < 15:
+                return 1.0
+            wins = pnls[pnls > 0]
+            losses = pnls[pnls <= 0]
+            if len(losses) == 0 or len(wins) == 0:
+                return 1.0
+            win_rate = len(wins) / len(pnls)
+            avg_rr = float(wins.mean()) / float(abs(losses.mean()))
+            if avg_rr <= 0:
+                return 1.0
+            q = 1.0 - win_rate
+            kelly_full = (win_rate * avg_rr - q) / avg_rr
+            kelly_full = max(0.0, min(kelly_full, 1.0))
+            # Normaliseer: quarter-Kelly van 0.25 (kelly=1.0) = multiplier 1.0
+            scaled = (kelly_full * self.settings.kelly_fraction) / 0.25
+            result = round(float(np.clip(scaled, 0.5, 1.3)), 2)
+            logger.debug(
+                "Kelly[%s]: WR=%.1f%% RR=%.2f kelly=%.3f fraction=%.2f → mult=%.2f",
+                sig_type, win_rate * 100, avg_rr, kelly_full, self.settings.kelly_fraction, result,
+            )
+            return result
+        except Exception as exc:
+            logger.debug("Kelly multiplier berekening mislukt: %s", exc)
+            return 1.0
+
+    def _compute_portfolio_heat(self, equity: float) -> float:
+        """
+        Berekent totaal open risico als fractie van equity.
+        Formule: som van (SL-afstand × volume × lot_factor) voor alle open posities.
+        Als alle SL's tegelijk geraakt worden, verlies je heat% van equity.
+        """
+        if equity <= 0:
+            return 0.0
+        total_risk = 0.0
+        for sym in self.settings.symbols:
+            lot_factor = float(SYMBOL_SPECS.get(sym, {}).get("lot_factor", 100))
+            for trade in self.memory.list_open_trades(sym):
+                sl_dist = abs(float(trade.get("entry_price", 0)) - float(trade.get("stop_loss", 0)))
+                volume = float(trade.get("volume", 0))
+                total_risk += sl_dist * volume * lot_factor
+        return total_risk / equity
+
     def _can_open_trade(self, account: dict, sym: str) -> tuple[bool, str]:
         """
         Hard risk gates evaluated before every execute_trade() call.
@@ -876,6 +1041,17 @@ class AutonomousTradingSystem:
         # Gate 5: broker connection — reject if account data unavailable
         if not account.get("equity") and not account.get("balance"):
             return False, "broker_data_unavailable (equity=0, balance=0)"
+
+        # Gate 6: portfolio heat — totaal open risico mag max_portfolio_heat% van equity niet overschrijden
+        equity = float(account.get("equity", 0.0))
+        if equity > 0 and self.settings.max_portfolio_heat > 0:
+            heat = self._compute_portfolio_heat(equity)
+            if heat > self.settings.max_portfolio_heat:
+                return (
+                    False,
+                    f"portfolio_heat={heat:.1%} > max={self.settings.max_portfolio_heat:.1%} "
+                    f"(totaal open risico te hoog)",
+                )
 
         return True, "alle_gates_ok"
 
@@ -945,8 +1121,13 @@ class AutonomousTradingSystem:
         ]
         if confidence:
             lines.append(f"ML conf:    {float(confidence):.1%}")
+        fvg_tag = "FVG" if features.get("fvg_confirms") else ""
+        sweep_tag = "SWEEP" if features.get("sweep_confirms") else ""
+        quality_tags = " ".join(filter(None, [fvg_tag, sweep_tag]))
+        if quality_tags:
+            lines.append(f"Kwaliteit:  {quality_tags}")
         lines += [
-            f"Risk mult:  CB={risk_mult:.0%}  PAT={pat_mult:.0%}",
+            f"Risk mult:  CB+Kelly={risk_mult:.0%}  PAT={pat_mult:.0%}",
             "",
             "FTMO ruimte:",
             f"  Dag:      €{daily_remaining:,.0f} resterend",

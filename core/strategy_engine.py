@@ -565,6 +565,24 @@ class StrategyEngine:
         d["mss_bull"] = (d["ema9"] > d["ema21"]) & (d["ema9"].shift(3) < d["ema21"].shift(3)) & (d["rsi14"] > 52)
         d["mss_bear"] = (d["ema9"] < d["ema21"]) & (d["ema9"].shift(3) > d["ema21"].shift(3)) & (d["rsi14"] < 48)
 
+        # ── Fair Value Gaps (3-candle imbalance) ────────────────
+        # Bullish FVG: huidige low > 2 bars geleden high (opwaartse gap, onvervuld)
+        fvg_bull_raw = d["low"] > d["high"].shift(2)
+        # Bearish FVG: huidige high < 2 bars geleden low (neerwaartse gap, onvervuld)
+        fvg_bear_raw = d["high"] < d["low"].shift(2)
+        # Detecteer recente FVG (binnen de laatste 6 bars) als potentieel entry-gebied
+        d["fvg_bull"] = fvg_bull_raw.rolling(6, min_periods=1).max().fillna(0).astype(bool)
+        d["fvg_bear"] = fvg_bear_raw.rolling(6, min_periods=1).max().fillna(0).astype(bool)
+
+        # ── Liquidity Sweeps (stop hunt detectie) ───────────────
+        # Bullish sweep: huidige bar liep onder ll10 maar sloot erboven (stop hunt op retail shorts)
+        d["liq_sweep_bull"] = (d["low"] < d["ll10"]) & (d["close"] > d["ll10"])
+        # Bearish sweep: huidige bar liep boven hh10 maar sloot eronder (stop hunt op retail longs)
+        d["liq_sweep_bear"] = (d["high"] > d["hh10"]) & (d["close"] < d["hh10"])
+        # Recente sweep (binnen 3 bars) is relevanter voor entry-kwaliteit
+        d["liq_sweep_bull_recent"] = d["liq_sweep_bull"].rolling(3, min_periods=1).max().fillna(0).astype(bool)
+        d["liq_sweep_bear_recent"] = d["liq_sweep_bear"].rolling(3, min_periods=1).max().fillna(0).astype(bool)
+
         return d.dropna(subset=["ema9", "ema21", "ema50", "ema200", "rsi14", "atr14", "h4_atr"])
 
     @staticmethod
@@ -640,6 +658,10 @@ class StrategyEngine:
         mss_b = bool(bar.get("mss_bull", False))
         mss_be = bool(bar.get("mss_bear", False))
         atr14 = _safe(bar.get("atr14", 1.0), 1.0)
+        fvg_bull = bool(bar.get("fvg_bull", False))
+        fvg_bear = bool(bar.get("fvg_bear", False))
+        liq_sweep_bull = bool(bar.get("liq_sweep_bull_recent", False))
+        liq_sweep_bear = bool(bar.get("liq_sweep_bear_recent", False))
 
         kz_mult = params.get("kz_mult", 1.25) if is_killzone else 1.0
         risk_a = params["risk_a"] * kz_mult
@@ -865,10 +887,20 @@ class StrategyEngine:
         tp2 = cl + d * t2r * sl_dist
         tp3 = cl + d * t3r * sl_dist
 
-        # Confidence: combinatie van signal prioriteit + ML + sentiment
+        # Confidence: combinatie van signal prioriteit + ML + sentiment + FVG/Sweep
         prio_conf = priority / 6.0
         sent_conf = abs(sentiment_score) * 0.3 if sentiment_score != 0 else 0.0
-        confidence = round(min(0.95, prio_conf * 0.5 + ml_confidence * 0.35 + sent_conf * 0.15), 3)
+        # FVG bevestigt entry-richting: institutionele imbalance in ons voordeel
+        fvg_confirms = (direction == "long" and fvg_bull) or (direction == "short" and fvg_bear)
+        # Liquiditeitssweep bevestigt setup: retail stops gejaagd vóór onze entry
+        sweep_confirms = (direction == "long" and liq_sweep_bull) or (direction == "short" and liq_sweep_bear)
+        fvg_boost = 0.05 if fvg_confirms else 0.0
+        sweep_boost = 0.06 if sweep_confirms else 0.0
+        confidence = round(min(0.95, prio_conf * 0.5 + ml_confidence * 0.35 + sent_conf * 0.15 + fvg_boost + sweep_boost), 3)
+
+        # Liquiditeitssweep boost voor BOS/MSS signalen: sweep + BOS = confirmed institutional entry
+        if sweep_confirms and sig_type in ("E_BOS", "F_MSS"):
+            risk_pct = round(risk_pct * 1.10, 5)  # +10% risk bij bevestigde sweep+BOS combo
 
         breakeven_r = params.get("breakeven_r", 0.8)
         kz_tag = " KZ" if is_killzone else ""
@@ -928,6 +960,12 @@ class StrategyEngine:
                 "breakeven_r": breakeven_r,
                 "is_killzone": is_killzone,
                 "kz_mult": kz_mult,
+                "fvg_confirms": fvg_confirms,
+                "sweep_confirms": sweep_confirms,
+                "fvg_bull": fvg_bull,
+                "fvg_bear": fvg_bear,
+                "liq_sweep_bull": liq_sweep_bull,
+                "liq_sweep_bear": liq_sweep_bear,
             },
         )
 
