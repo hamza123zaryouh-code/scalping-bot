@@ -737,7 +737,7 @@ class TelegramControlLayer:
             "backtest": self._backtest_keyboard,
             "reports": self._reports_keyboard,
         }
-        return mapping[section]()
+        return mapping.get(section, self._main_menu_keyboard)()
 
     def _format_status_detail(self, field: str, data: dict[str, Any]) -> str:
         mapping = {

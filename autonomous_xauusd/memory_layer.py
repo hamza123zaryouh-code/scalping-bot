@@ -217,13 +217,17 @@ class MemoryLayer:
     def fetch_pending_control_commands(self, limit: int = 20) -> list[dict[str, Any]]:
         """Fetch and atomically claim pending commands (sets status→executing in same TX)."""
         with self.session_scope() as session:
-            rows = session.scalars(
+            # skip_locked=True requires PostgreSQL; omit it for SQLite (paper/dev mode).
+            _is_sqlite = str(self.engine.url).startswith("sqlite")
+            q = (
                 select(ControlCommand)
                 .where(ControlCommand.status == "pending")
                 .order_by(ControlCommand.created_at.asc(), ControlCommand.id.asc())
                 .limit(limit)
-                .with_for_update(skip_locked=True)
-            ).all()
+            )
+            if not _is_sqlite:
+                q = q.with_for_update(skip_locked=True)
+            rows = session.scalars(q).all()
             now = datetime.now(timezone.utc)
             for row in rows:
                 row.status = "executing"

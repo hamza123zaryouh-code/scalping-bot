@@ -122,7 +122,7 @@ class AutonomousTradingSystem:
         cb_status = "ACTIVE" if cb.get("circuit_breaker_active") else "OK"
         cb_description = cb.get("circuit_description", "")
         return (
-            f"V20 Status: {runtime.get('status', 'idle')}\n"
+            f"V22 Status: {runtime.get('status', 'idle')}\n"
             f"Mode: {runtime.get('mode', self.settings.mode)}\n"
             f"Symbool: {symbol} {timeframe}\n"
             f"Open posities: {runtime.get('open_positions', 0)}\n"
@@ -197,12 +197,26 @@ class AutonomousTradingSystem:
 
             session_info = self.session_engine.get_session_info()
             if not session_info.is_valid_for_trading:
-                logger.info("[WAIT: session_blocked] %s", session_info.description)
-                self._update_runtime_state(
-                    status="waiting", session=session_info.session.value,
-                    session_description=session_info.description,
+                # Respect AUTO_TRADING_START/END_HOUR even outside premium sessions
+                now_utc = datetime.now(timezone.utc)
+                dow = now_utc.weekday()
+                hour = now_utc.hour
+                is_hard_block = (
+                    dow >= 5  # Weekend
+                    or (dow == 4 and hour >= self.settings.trading_end_hour)  # Vrijdag na einde
                 )
-                return
+                within_hours = self.settings.trading_start_hour <= hour < self.settings.trading_end_hour
+                if is_hard_block or not within_hours:
+                    logger.info("[WAIT: session_blocked] %s", session_info.description)
+                    self._update_runtime_state(
+                        status="waiting", session=session_info.session.value,
+                        session_description=session_info.description,
+                    )
+                    return
+                logger.debug(
+                    "[SESSION: extended_hours] %s — doorgaan binnen geconfigureerde uren %d:00-%d:00 UTC",
+                    session_info.description, self.settings.trading_start_hour, self.settings.trading_end_hour,
+                )
 
             # ── Gedeelde checks (één keer per cycle) ──────────────
             account = self.engine.account_status()
@@ -334,7 +348,7 @@ class AutonomousTradingSystem:
             account_equity=account.get("equity", 0.0),
             risk_multiplier=risk_mult,
         )
-        self.memory.set_runtime_state("last_trade_opened_at", datetime.now(timezone.utc).isoformat())
+        self.memory.set_runtime_state(f"last_trade_opened_at_{sym}", datetime.now(timezone.utc).isoformat())
         self._ftmo_guard.record_trade_opened()
         self._pattern_memory.record_trade_opened(
             sig_type, signal.side, h4_regime=h4_regime, session=session_info.session.value,
@@ -782,7 +796,9 @@ class AutonomousTradingSystem:
             self.memory.set_bot_control_state(bot_active=False, trading_paused=True, emergency_stop=True)
             return "Emergency stop bevestigd. Nieuwe trades zijn uitgeschakeld."
         if action == "close_all_positions":
-            closed = self.engine.close_all_positions(symbol=self.settings.symbol, reason="telegram_close_all")
+            closed = []
+            for sym in self.settings.symbols:
+                closed.extend(self.engine.close_all_positions(symbol=sym, reason="telegram_close_all"))
             for trade in closed:
                 self.memory.log_trade_close(trade)
                 self.circuit_breaker.record_trade_result(trade.pnl)
@@ -844,8 +860,8 @@ class AutonomousTradingSystem:
                 f"max_losses_per_day={self.settings.max_losses_per_day} bereikt ({losses_today} verlies vandaag)",
             )
 
-        # Gate 4: cooldown between trades
-        last_opened = self.memory.get_runtime_state("last_trade_opened_at")
+        # Gate 4: cooldown between trades (per-symbool zodat EUR/GBP onafhankelijk traden)
+        last_opened = self.memory.get_runtime_state(f"last_trade_opened_at_{sym}")
         if last_opened:
             try:
                 elapsed_min = (now - datetime.fromisoformat(last_opened)).total_seconds() / 60
@@ -957,7 +973,7 @@ class AutonomousTradingSystem:
         daily_pct = (daily_used / daily_limit * 100) if daily_limit else 0
 
         lines = [
-            f"{result_emoji} — XAUUSD trade gesloten",
+            f"{result_emoji} — {closed_trade.symbol} trade gesloten",
             "",
             f"Exit:       {closed_trade.exit_price:.2f}",
             f"PnL:        €{closed_trade.pnl:+,.2f}",

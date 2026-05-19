@@ -149,10 +149,14 @@ class LiveRuntime:
 
                 if self._trading_system is not None:
                     try:
-                        self._send_telegram_alert(
+                        # Run in executor — notify() is blocking (httpx + sleep) and must
+                        # not be called directly from the async event loop.
+                        await asyncio.get_running_loop().run_in_executor(
+                            self._executor,
+                            self._send_telegram_alert,
                             f"SYSTEM CRASH #{self._restart_count}\n"
                             f"Error: {str(exc)[:200]}\n"
-                            f"Restarting in {delay}s..."
+                            f"Restarting in {delay}s...",
                         )
                     except Exception as tg_exc:
                         logger.warning("Could not send crash alert to Telegram: %s", tg_exc)
@@ -296,13 +300,20 @@ class LiveRuntime:
     def _connect_data_layer(self) -> bool:
         if self._trading_system is None:
             return False
-        result: bool = self._trading_system.engine.connect()
-        self._health.mt5_connected = result
-        if result:
-            logger.info("Data/execution layer connected")
-        else:
-            logger.warning("Data/execution layer connection failed — check configuration")
-        return result
+        # Retry MT5 verbinding zodat de bot op VPS wacht totdat MT5 opgestart is
+        for attempt in range(1, 4):
+            result: bool = self._trading_system.engine.connect()
+            self._health.mt5_connected = result
+            if result:
+                logger.info("Data/execution layer verbonden (poging %d)", attempt)
+                return True
+            logger.warning(
+                "Data/execution layer verbinding mislukt (poging %d/3) — herpoging over 20s",
+                attempt,
+            )
+            time.sleep(20)
+        logger.error("Data/execution layer verbinding definitief mislukt na 3 pogingen")
+        return False
 
     def _sync_open_positions(self) -> None:
         if self._trading_system is None:
@@ -485,9 +496,10 @@ class LiveRuntime:
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(sig, lambda s=sig.name: _handle_signal(s))
         else:
-            # Windows: use KeyboardInterrupt handler
-            signal.signal(signal.SIGINT, lambda s, f: self._stop_event.set())
-            signal.signal(signal.SIGTERM, lambda s, f: self._stop_event.set())
+            # Windows: signal handlers run in a different thread, so we must use
+            # call_soon_threadsafe to safely set an asyncio.Event from outside the loop.
+            signal.signal(signal.SIGINT, lambda s, f: loop.call_soon_threadsafe(self._stop_event.set))
+            signal.signal(signal.SIGTERM, lambda s, f: loop.call_soon_threadsafe(self._stop_event.set))
 
     # ─────────────────────────────────────────────────────────────
     # STRUCTURED LOGGING

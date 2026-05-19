@@ -289,6 +289,7 @@ class DataExecutionLayer:
                     pnl=float(pnl),
                     status="closed",
                     close_reason=close_reason,
+                    symbol=str(position.get("symbol", "")),
                     meta={"execution": "paper"},
                 )
             )
@@ -321,6 +322,7 @@ class DataExecutionLayer:
                     pnl=float(getattr(final_deal, "profit", 0.0)),
                     status="closed",
                     close_reason="broker_close",
+                    symbol=str(trade.get("symbol", "")),
                     meta={"execution": "mt5"},
                 )
             )
@@ -342,6 +344,7 @@ class DataExecutionLayer:
                     pnl=pnl,
                     status="closed",
                     close_reason=reason,
+                    symbol=str(position.get("symbol", "")),
                     meta={"execution": "paper", "forced_close": True},
                 )
             )
@@ -389,6 +392,7 @@ class DataExecutionLayer:
                     pnl=float(getattr(position, "profit", 0.0)),
                     status="closed",
                     close_reason=reason,
+                    symbol=str(position.symbol),
                     meta={"execution": "mt5", "retcode": retcode, "forced_close": True},
                 )
             )

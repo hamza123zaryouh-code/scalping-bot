@@ -269,7 +269,7 @@ class FTMOGuard:
         cfg = self.config
         locks: list[LockStatus] = []
 
-        # 1. Daily loss lock
+        # 1. Daily loss lock — vast 5% van startkapitaal (FTMO-regel: altijd €8k op €160k)
         if s.day_start_equity > 0:
             daily_loss = max(0.0, s.day_start_equity - equity)
             hard_limit = cfg.max_daily_loss - cfg.daily_buffer

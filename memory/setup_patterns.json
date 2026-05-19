@@ -57,17 +57,17 @@
         55
       ],
       "session": "ny",
-      "total_trades": 78,
+      "total_trades": 80,
       "winning_trades": 25,
-      "total_pnl": -29991.84,
-      "win_rate": 0.3205,
-      "avg_rr": 1.656,
-      "avg_holding_minutes": 153.1,
-      "expectancy": -384.51,
-      "quality_score": 2.319,
+      "total_pnl": -30775.02,
+      "win_rate": 0.3125,
+      "avg_rr": 1.644,
+      "avg_holding_minutes": 150.8,
+      "expectancy": -384.69,
+      "quality_score": 2.258,
       "is_recommended": false,
       "is_blocked": false,
-      "last_updated": "2026-05-18T10:46:54.286126+00:00"
+      "last_updated": "2026-05-19T12:21:01.545056+00:00"
     },
     "D_PULLBACK_long_CHOPPY_bull_HIGH_ny": {
       "pattern_id": "D_PULLBACK_long_CHOPPY_bull_HIGH_ny",
@@ -80,17 +80,17 @@
         65
       ],
       "session": "ny",
-      "total_trades": 162,
-      "winning_trades": 145,
-      "total_pnl": 91675.64,
-      "win_rate": 0.8951,
-      "avg_rr": 3.762,
-      "avg_holding_minutes": 219.1,
-      "expectancy": 565.9,
-      "quality_score": 17.152,
+      "total_trades": 170,
+      "winning_trades": 149,
+      "total_pnl": 90031.04,
+      "win_rate": 0.8765,
+      "avg_rr": 3.62,
+      "avg_holding_minutes": 212.3,
+      "expectancy": 529.59,
+      "quality_score": 16.312,
       "is_recommended": true,
       "is_blocked": false,
-      "last_updated": "2026-05-18T07:56:43.814580+00:00"
+      "last_updated": "2026-05-19T12:21:01.599755+00:00"
     },
     "D_PULLBACK_long_CHOPPY_bull_HIGH_london": {
       "pattern_id": "D_PULLBACK_long_CHOPPY_bull_HIGH_london",
@@ -103,17 +103,17 @@
         65
       ],
       "session": "london",
-      "total_trades": 27,
+      "total_trades": 35,
       "winning_trades": 4,
-      "total_pnl": -11940.1,
-      "win_rate": 0.1481,
-      "avg_rr": 0.908,
-      "avg_holding_minutes": 111.1,
-      "expectancy": -442.23,
-      "quality_score": 0.448,
+      "total_pnl": -17503.56,
+      "win_rate": 0.1143,
+      "avg_rr": 1.059,
+      "avg_holding_minutes": 109.7,
+      "expectancy": -500.1,
+      "quality_score": 0.434,
       "is_recommended": false,
       "is_blocked": true,
-      "last_updated": "2026-05-18T10:46:54.487394+00:00"
+      "last_updated": "2026-05-19T12:21:01.641585+00:00"
     },
     "B_MACDCROSS_long_CHOPPY_bull_OB_ny": {
       "pattern_id": "B_MACDCROSS_long_CHOPPY_bull_OB_ny",
@@ -333,17 +333,17 @@
         45
       ],
       "session": "ny",
-      "total_trades": 54,
-      "winning_trades": 30,
-      "total_pnl": -27449.87,
-      "win_rate": 0.5556,
-      "avg_rr": 1.644,
-      "avg_holding_minutes": 131.1,
-      "expectancy": -508.33,
-      "quality_score": 3.659,
+      "total_trades": 60,
+      "winning_trades": 34,
+      "total_pnl": -29425.65,
+      "win_rate": 0.5667,
+      "avg_rr": 1.631,
+      "avg_holding_minutes": 130.0,
+      "expectancy": -490.43,
+      "quality_score": 3.798,
       "is_recommended": false,
       "is_blocked": false,
-      "last_updated": "2026-05-18T10:46:54.386567+00:00"
+      "last_updated": "2026-05-19T12:21:01.410373+00:00"
     },
     "A_EMACROSS_short_CHOPPY_bear_OS_ny": {
       "pattern_id": "A_EMACROSS_short_CHOPPY_bear_OS_ny",
@@ -386,7 +386,7 @@
       "avg_rr": 1.348,
       "avg_holding_minutes": 105.0,
       "expectancy": -367.61,
-      "quality_score": 0.741,
+      "quality_score": 0.74,
       "is_recommended": false,
       "is_blocked": true,
       "last_updated": "2026-05-18T10:46:54.440626+00:00"
@@ -655,17 +655,17 @@
         55
       ],
       "session": "london",
-      "total_trades": 14,
+      "total_trades": 16,
       "winning_trades": 0,
-      "total_pnl": -12570.22,
+      "total_pnl": -13714.62,
       "win_rate": 0.0,
-      "avg_rr": 1.737,
-      "avg_holding_minutes": 85.7,
-      "expectancy": -897.87,
+      "avg_rr": 1.719,
+      "avg_holding_minutes": 90.0,
+      "expectancy": -857.16,
       "quality_score": 0.0,
       "is_recommended": false,
       "is_blocked": true,
-      "last_updated": "2026-05-18T10:46:54.408690+00:00"
+      "last_updated": "2026-05-19T12:21:01.464593+00:00"
     },
     "E_BOS_short_CHOPPY_bear_OS_ny": {
       "pattern_id": "E_BOS_short_CHOPPY_bear_OS_ny",
@@ -885,17 +885,17 @@
         65
       ],
       "session": "ny",
-      "total_trades": 96,
+      "total_trades": 98,
       "winning_trades": 19,
-      "total_pnl": -50339.54,
-      "win_rate": 0.1979,
-      "avg_rr": 1.839,
-      "avg_holding_minutes": 170.0,
-      "expectancy": -524.37,
-      "quality_score": 1.665,
+      "total_pnl": -51490.52,
+      "win_rate": 0.1939,
+      "avg_rr": 1.831,
+      "avg_holding_minutes": 169.0,
+      "expectancy": -525.41,
+      "quality_score": 1.631,
       "is_recommended": false,
       "is_blocked": true,
-      "last_updated": "2026-05-18T10:46:54.459942+00:00"
+      "last_updated": "2026-05-19T12:21:01.490965+00:00"
     },
     "E_BOS_long_CHOPPY_bull_MID_ny": {
       "pattern_id": "E_BOS_long_CHOPPY_bull_MID_ny",
@@ -931,17 +931,17 @@
         55
       ],
       "session": "london",
-      "total_trades": 5,
+      "total_trades": 11,
       "winning_trades": 1,
-      "total_pnl": -340.02,
-      "win_rate": 0.2,
-      "avg_rr": 0.321,
-      "avg_holding_minutes": 108.0,
-      "expectancy": -68.0,
-      "quality_score": 0.115,
+      "total_pnl": -5625.1,
+      "win_rate": 0.0909,
+      "avg_rr": 1.478,
+      "avg_holding_minutes": 92.7,
+      "expectancy": -511.37,
+      "quality_score": 0.334,
       "is_recommended": false,
       "is_blocked": true,
-      "last_updated": "2026-05-15T16:35:06.813302"
+      "last_updated": "2026-05-19T12:21:01.656329+00:00"
     },
     "D_PULLBACK_long_CHOPPY_bull_LOW_ny": {
       "pattern_id": "D_PULLBACK_long_CHOPPY_bull_LOW_ny",
@@ -1736,17 +1736,17 @@
         45
       ],
       "session": "london",
-      "total_trades": 18,
+      "total_trades": 22,
       "winning_trades": 0,
-      "total_pnl": -12472.98,
+      "total_pnl": -14761.78,
       "win_rate": 0.0,
-      "avg_rr": 1.254,
-      "avg_holding_minutes": 80.0,
-      "expectancy": -692.94,
+      "avg_rr": 1.29,
+      "avg_holding_minutes": 81.8,
+      "expectancy": -670.99,
       "quality_score": 0.0,
       "is_recommended": false,
       "is_blocked": true,
-      "last_updated": "2026-05-18T10:46:54.416274+00:00"
+      "last_updated": "2026-05-19T12:21:01.478058+00:00"
     },
     "A_EMACROSS_short_CHOPPY_bear_LOW_london": {
       "pattern_id": "A_EMACROSS_short_CHOPPY_bear_LOW_london",
@@ -1851,9 +1851,9 @@
         55
       ],
       "session": "london",
-      "total_trades": 6,
+      "total_trades": 8,
       "winning_trades": 0,
-      "total_pnl": -5976.06,
+      "total_pnl": -7968.08,
       "win_rate": 0.0,
       "avg_rr": 3.635,
       "avg_holding_minutes": 60.0,
@@ -1861,7 +1861,7 @@
       "quality_score": 0.0,
       "is_recommended": false,
       "is_blocked": true,
-      "last_updated": "2026-05-18T10:46:54.236498+00:00"
+      "last_updated": "2026-05-19T12:21:01.325354+00:00"
     },
     "B_MACDCROSS_long_CHOPPY_neutral_MID_london": {
       "pattern_id": "B_MACDCROSS_long_CHOPPY_neutral_MID_london",
@@ -1874,9 +1874,9 @@
         55
       ],
       "session": "london",
-      "total_trades": 6,
+      "total_trades": 8,
       "winning_trades": 0,
-      "total_pnl": -6877.62,
+      "total_pnl": -9170.16,
       "win_rate": 0.0,
       "avg_rr": 3.639,
       "avg_holding_minutes": 240.0,
@@ -1884,7 +1884,7 @@
       "quality_score": 0.0,
       "is_recommended": false,
       "is_blocked": true,
-      "last_updated": "2026-05-18T10:46:54.247844+00:00"
+      "last_updated": "2026-05-19T12:21:01.339375+00:00"
     },
     "F_MSS_long_CHOPPY_bull_HIGH_london": {
       "pattern_id": "F_MSS_long_CHOPPY_bull_HIGH_london",
@@ -1897,17 +1897,17 @@
         65
       ],
       "session": "london",
-      "total_trades": 12,
+      "total_trades": 16,
       "winning_trades": 0,
-      "total_pnl": -9367.14,
+      "total_pnl": -12557.54,
       "win_rate": 0.0,
-      "avg_rr": 1.943,
+      "avg_rr": 1.981,
       "avg_holding_minutes": 120.0,
-      "expectancy": -780.59,
+      "expectancy": -784.85,
       "quality_score": 0.0,
       "is_recommended": false,
       "is_blocked": true,
-      "last_updated": "2026-05-18T10:46:54.273765+00:00"
+      "last_updated": "2026-05-19T12:21:01.369227+00:00"
     },
     "F_MSS_long_CHOPPY_bull_LOW_london": {
       "pattern_id": "F_MSS_long_CHOPPY_bull_LOW_london",
@@ -1920,9 +1920,9 @@
         45
       ],
       "session": "london",
-      "total_trades": 6,
+      "total_trades": 8,
       "winning_trades": 0,
-      "total_pnl": -5699.64,
+      "total_pnl": -7599.52,
       "win_rate": 0.0,
       "avg_rr": 3.626,
       "avg_holding_minutes": 180.0,
@@ -1930,7 +1930,7 @@
       "quality_score": 0.0,
       "is_recommended": false,
       "is_blocked": true,
-      "last_updated": "2026-05-18T10:46:54.365061+00:00"
+      "last_updated": "2026-05-19T12:21:01.437039+00:00"
     },
     "F_MSS_short_CHOPPY_bear_OS_ny": {
       "pattern_id": "F_MSS_short_CHOPPY_bear_OS_ny",
@@ -1954,6 +1954,29 @@
       "is_recommended": false,
       "is_blocked": true,
       "last_updated": "2026-05-18T10:46:54.449944+00:00"
+    },
+    "A_EMACROSS_long_CHOPPY_bull_MID_london": {
+      "pattern_id": "A_EMACROSS_long_CHOPPY_bull_MID_london",
+      "signal_type": "A_EMACROSS",
+      "direction": "long",
+      "h4_regime": "CHOPPY",
+      "d1_trend": "bull",
+      "rsi_range": [
+        45,
+        55
+      ],
+      "session": "london",
+      "total_trades": 2,
+      "winning_trades": 0,
+      "total_pnl": -2844.06,
+      "win_rate": 0.0,
+      "avg_rr": 3.637,
+      "avg_holding_minutes": 420.0,
+      "expectancy": -1422.03,
+      "quality_score": 0.0,
+      "is_recommended": false,
+      "is_blocked": false,
+      "last_updated": "2026-05-19T12:21:01.613755+00:00"
     }
   }
 }

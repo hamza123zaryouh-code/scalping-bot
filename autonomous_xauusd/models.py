@@ -84,6 +84,7 @@ class ClosedTradeResult:
     pnl: float
     status: str
     close_reason: str
+    symbol: str = ""
     meta: dict[str, Any] = field(default_factory=dict)
 
 

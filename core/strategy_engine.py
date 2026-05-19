@@ -226,26 +226,28 @@ V22_CFG: dict = {
     "risk_a": 0.0120,
     "risk_b": 0.0095,
     "risk_c": 0.0075,
-    # ── Lagere ADX drempels → meer signalen op matige trends ──────
-    "adx_min": 7,
-    "h4adx_min": 10,
-    # ── EMA cross minder streng → meer A-signalen ─────────────────
-    "ema_cross_min_adx": 14,
+    # ── ADX drempels — gefilterd op echte trendkracht ────────────
+    "adx_min": 18,
+    "h4adx_min": 18,
+    # ── EMA cross ─────────────────────────────────────────────────
+    "ema_cross_min_adx": 18,
     "ema_cross_min_h4_slope": 0.20,
     "ema_cross_vol_ratio_min": 0.80,
-    "ema_cross_require_strong_regime": False,  # BULL volstaat (niet alleen STERK_BULL)
-    # ── Pullback minder streng ────────────────────────────────────
-    "pullback_min_adx": 15,
+    "ema_cross_require_strong_regime": False,
+    # ── Pullback ──────────────────────────────────────────────────
+    "pullback_min_adx": 18,
     "pullback_min_h4_slope": 0.20,
     "pullback_vol_ratio_min": 0.80,
-    # ── BOS iets lagere drempel ───────────────────────────────────
+    # ── BOS ───────────────────────────────────────────────────────
     "bos_min_adx": 20,
     "bos_min_h4_slope": 0.25,
-    # ── Max gelijktijdige posities (gedeeld over alle paren) ───────
+    # ── Breakeven pas na 1R winst ─────────────────────────────────
+    "breakeven_r": 1.0,
+    # ── Max gelijktijdige posities ────────────────────────────────
     "max_concurrent_positions": 2,
     # ── Per-paar daglimieten ──────────────────────────────────────
-    "max_dag": 4,
-    "sl_dag_max": 2,
+    "max_dag": 5,
+    "sl_dag_max": 3,
     # ── Compound (iets agressiever bij winstgevende week) ─────────
     "compound_boost": 1.10,
 }
