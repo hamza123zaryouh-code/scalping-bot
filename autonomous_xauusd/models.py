@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -93,7 +93,7 @@ class SentimentScore:
     label: str
     headline_count: int
     sources: list[str] = field(default_factory=list)
-    fetched_at: datetime = field(default_factory=datetime.utcnow)
+    fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass

@@ -1,5 +1,5 @@
 """
-XAUUSD V17 Risk Engine — Autonoom Circuit Breaker Systeem
+XAUUSD V20 Risk Engine — Autonoom Circuit Breaker Systeem
 =========================================================
 Beschermt het account zonder handmatige interventie.
 
@@ -18,6 +18,7 @@ Elke check is autonoom en herstart vanzelf na recovery.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
@@ -25,14 +26,14 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────
-# CONSTANTS
+# CONSTANTS — overrideable via environment variables
 # ─────────────────────────────────────────────────────────────────
 
-FTMO_STARTING_CAPITAL = 160_000.0
-FTMO_DAILY_LOSS_LIMIT = 6_000.0  # Interne daglimiet €6k per dag
-FTMO_TOTAL_LOSS_LIMIT = 16_000.0  # €16k totaal (10%)
+FTMO_STARTING_CAPITAL = float(os.getenv("FTMO_STARTING_CAPITAL", "160000"))
+FTMO_DAILY_LOSS_LIMIT = 6_000.0  # Vast — interne daglimiet, niet aanpasbaar via env
+FTMO_TOTAL_LOSS_LIMIT = float(os.getenv("FTMO_TOTAL_LOSS_LIMIT", "16000"))
 FTMO_DAILY_LOSS_PCT = FTMO_DAILY_LOSS_LIMIT / FTMO_STARTING_CAPITAL
-FTMO_TOTAL_LOSS_PCT = 0.10  # 10% totaal
+FTMO_TOTAL_LOSS_PCT = float(os.getenv("FTMO_TOTAL_LOSS_PCT", "0.10"))
 
 # Interne limieten (conservatiever dan FTMO)
 INTERNAL_DAILY_LOSS_PCT = 0.65  # 65% van FTMO dag-limiet
@@ -318,6 +319,66 @@ class CircuitBreaker:
             "circuit_description": self._get_circuit_description(),
             "risk_level": self._get_risk_level(),
         }
+
+    def get_persistent_state(self) -> dict:
+        """Minimale state die nodig is voor crash-safe herstart."""
+        s = self._state
+        return {
+            "trading_date": s.trading_date.isoformat(),
+            "day_start_balance": s.day_start_balance,
+            "current_balance": s.current_balance,
+            "peak_balance": s.peak_balance,
+            "daily_pnl": s.daily_pnl,
+            "daily_trades": s.daily_trades,
+            "daily_losses": s.daily_losses,
+            "consecutive_losses": s.consecutive_losses,
+            "consecutive_wins": s.consecutive_wins,
+            "recent_results": list(s.recent_results),
+            "ftmo_daily_loss_used": s.ftmo_daily_loss_used,
+            "ftmo_total_loss_used": s.ftmo_total_loss_used,
+            "cooldown_until": s.cooldown_until.isoformat() if s.cooldown_until else None,
+        }
+
+    def restore_persistent_state(self, saved: dict) -> None:
+        """Herstel dagelijkse tracking-state na een crash of herstart.
+
+        Alleen van toepassing als de opgeslagen datum overeenkomt met vandaag;
+        bij een nieuwe dag worden de dagcounters sowieso gereset.
+        """
+        try:
+            saved_date = date.fromisoformat(saved["trading_date"])
+            if saved_date != date.today():
+                logger.info(
+                    "Opgeslagen CB-state is van %s — dagcounters worden niet hersteld (nieuwe dag)",
+                    saved_date,
+                )
+                return
+            s = self._state
+            s.trading_date = saved_date
+            s.day_start_balance = float(saved.get("day_start_balance", s.day_start_balance))
+            s.current_balance = float(saved.get("current_balance", s.current_balance))
+            s.peak_balance = float(saved.get("peak_balance", s.peak_balance))
+            s.daily_pnl = float(saved.get("daily_pnl", 0.0))
+            s.daily_trades = int(saved.get("daily_trades", 0))
+            s.daily_losses = int(saved.get("daily_losses", 0))
+            s.consecutive_losses = int(saved.get("consecutive_losses", 0))
+            s.consecutive_wins = int(saved.get("consecutive_wins", 0))
+            s.recent_results = list(saved.get("recent_results", []))
+            s.ftmo_daily_loss_used = float(saved.get("ftmo_daily_loss_used", 0.0))
+            s.ftmo_total_loss_used = float(saved.get("ftmo_total_loss_used", 0.0))
+            cooldown_str = saved.get("cooldown_until")
+            if cooldown_str:
+                s.cooldown_until = datetime.fromisoformat(cooldown_str)
+            self._evaluate()
+            logger.info(
+                "Circuit breaker state hersteld: daily_pnl=€%.0f, "
+                "consecutive_losses=%d, ftmo_daily=€%.0f",
+                s.daily_pnl,
+                s.consecutive_losses,
+                s.ftmo_daily_loss_used,
+            )
+        except Exception as exc:
+            logger.warning("Circuit breaker state kon niet worden hersteld: %s", exc)
 
     # ─────────────────────────────────────────────────────────────
     # INTERNE EVALUATIE

@@ -72,12 +72,19 @@ async def test_dangerous_action_requests_confirmation(monkeypatch):
     query = FakeQuery("control:emergency_stop")
     update = FakeUpdate(user_id=999, query=query)
 
-    async def fake_post(path, payload):
-        assert path == "/api/v1/telegram/control/emergency_stop"
-        assert payload["confirmed"] is False
-        return {"data": {"requires_confirmation": True, "summary": "Bevestiging vereist."}}
+    # Mock the embedded service — emergency_stop without confirmation must ask for it
+    class FakeService:
+        def handle_control_action(self, action, user_id, username, confirmed=False):
+            return {
+                "action": action,
+                "status": "confirmation_required",
+                "summary": "Bevestiging vereist.",
+                "requires_confirmation": True,
+                "command_id": None,
+                "data": {},
+            }
 
-    monkeypatch.setattr(layer._backend, "post", fake_post)
+    monkeypatch.setattr(layer, "_service", FakeService())
 
     await layer._on_callback(update, None)
 
@@ -94,20 +101,24 @@ async def test_confirm_yes_executes_action(monkeypatch):
     update = FakeUpdate(user_id=999, query=query)
     called = {}
 
-    async def fake_post(path, payload):
-        called["path"] = path
-        called["payload"] = payload
-        return {
-            "data": {
+    # Mock the embedded service — confirmed action must be executed
+    class FakeService:
+        def handle_control_action(self, action, user_id, username, confirmed=False):
+            called["action"] = action
+            called["confirmed"] = confirmed
+            return {
+                "action": action,
+                "status": "accepted",
                 "summary": "Emergency Stop command geaccepteerd.",
                 "requires_confirmation": False,
+                "command_id": 1,
+                "data": {},
             }
-        }
 
-    monkeypatch.setattr(layer._backend, "post", fake_post)
+    monkeypatch.setattr(layer, "_service", FakeService())
 
     await layer._on_callback(update, None)
 
-    assert called["path"] == "/api/v1/telegram/control/emergency_stop"
-    assert called["payload"]["confirmed"] is True
+    assert called["action"] == "emergency_stop"
+    assert called["confirmed"] is True
     assert query.edited_text == "Emergency Stop command geaccepteerd."

@@ -176,33 +176,24 @@ class LiveRuntime:
     async def _boot_and_run(self) -> None:
         self._health.status = "booting"
         logger.info("LiveRuntime: boot sequence starting")
+        loop = asyncio.get_running_loop()
 
         # Step 1: validate environment
-        await asyncio.get_event_loop().run_in_executor(
-            self._executor, self._validate_environment
-        )
+        await loop.run_in_executor(self._executor, self._validate_environment)
 
         # Step 2: initialize trading system
-        await asyncio.get_event_loop().run_in_executor(
-            self._executor, self._initialize_trading_system
-        )
+        await loop.run_in_executor(self._executor, self._initialize_trading_system)
 
         # Step 3: connect data/execution layer
-        connected = await asyncio.get_event_loop().run_in_executor(
-            self._executor, self._connect_data_layer
-        )
+        connected = await loop.run_in_executor(self._executor, self._connect_data_layer)
         if not connected:
             raise RuntimeError("Data/execution layer connection failed — check MT5 or paper mode config")
 
         # Step 4: sync open positions
-        await asyncio.get_event_loop().run_in_executor(
-            self._executor, self._sync_open_positions
-        )
+        await loop.run_in_executor(self._executor, self._sync_open_positions)
 
         # Step 5: start Telegram
-        await asyncio.get_event_loop().run_in_executor(
-            self._executor, self._start_telegram
-        )
+        await loop.run_in_executor(self._executor, self._start_telegram)
 
         self._health.status = "running"
         logger.info("LiveRuntime: boot complete — entering trading loop")
@@ -221,7 +212,7 @@ class LiveRuntime:
 
     async def _trading_loop(self) -> None:
         """Run the main trading cycle in the executor (blocking I/O)."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         while not self._stop_event.is_set():
             try:
                 await loop.run_in_executor(self._executor, self._run_one_cycle)
@@ -248,11 +239,10 @@ class LiveRuntime:
 
     async def _health_monitor(self) -> None:
         """Check system health every 30 seconds."""
+        loop = asyncio.get_running_loop()
         while not self._stop_event.is_set():
             try:
-                await asyncio.get_event_loop().run_in_executor(
-                    self._executor, self._run_health_checks
-                )
+                await loop.run_in_executor(self._executor, self._run_health_checks)
             except Exception as exc:
                 logger.warning("Health monitor error: %s", exc)
 
@@ -286,7 +276,10 @@ class LiveRuntime:
         from autonomous_xauusd.settings import load_settings
         settings = load_settings()
         mode = settings.mode
-        logger.info("Environment validated: mode=%s symbol=%s tf=%s", mode, settings.symbol, settings.timeframe)
+        logger.info(
+            "Environment validated: mode=%s symbols=%s tf=%s",
+            mode, ",".join(settings.symbols), settings.timeframe,
+        )
 
         if mode == "live" and not settings.mt5_ready:
             raise RuntimeError(
@@ -317,54 +310,60 @@ class LiveRuntime:
         try:
             from autonomous_xauusd.settings import load_settings
             settings = load_settings()
-            symbol = settings.symbol
 
-            open_trades = self._trading_system.memory.list_open_trades(symbol)
-            db_tickets = {
-                str(t.get("broker_ticket", ""))
-                for t in open_trades
-                if t.get("broker_ticket")
-            }
-            logger.info("Position sync: %d open trades in DB for %s", len(open_trades), symbol)
+            total_db = total_broker = total_orphaned = total_ext_closed = 0
+
+            for symbol in settings.symbols:
+                open_trades = self._trading_system.memory.list_open_trades(symbol)
+                db_tickets = {
+                    str(t.get("broker_ticket", ""))
+                    for t in open_trades
+                    if t.get("broker_ticket")
+                }
+                logger.info("Position sync: %d open trades in DB for %s", len(open_trades), symbol)
+                total_db += len(open_trades)
+
+                if settings.mode == "paper":
+                    continue
+
+                broker_positions = self._trading_system.engine._live_engine.sync_open_positions(symbol)
+                broker_tickets = {str(p["ticket"]) for p in broker_positions}
+                total_broker += len(broker_positions)
+
+                orphaned = [p for p in broker_positions if str(p["ticket"]) not in db_tickets]
+                total_orphaned += len(orphaned)
+                if orphaned:
+                    logger.warning(
+                        "Startup reconciliation [%s]: %d orphaned broker position(s): %s",
+                        symbol, len(orphaned), [p["ticket"] for p in orphaned],
+                    )
+                    self._trading_system.memory.set_runtime_state(
+                        f"orphaned_positions_{symbol}",
+                        {
+                            "positions": orphaned,
+                            "detected_at": datetime.now(_UTC).isoformat(),
+                            "count": len(orphaned),
+                        },
+                    )
+
+                externally_closed = [
+                    t for t in open_trades
+                    if t.get("broker_ticket") and str(t["broker_ticket"]) not in broker_tickets
+                ]
+                total_ext_closed += len(externally_closed)
+                if externally_closed:
+                    logger.warning(
+                        "Startup reconciliation [%s]: %d DB trade(s) missing from MT5: %s",
+                        symbol, len(externally_closed), [t.get("broker_ticket") for t in externally_closed],
+                    )
 
             if settings.mode == "paper":
                 logger.info("Paper mode: skipping MT5 broker reconciliation")
                 return
 
-            # Reconcile against live broker positions
-            broker_positions = self._trading_system.engine._live_engine.sync_open_positions(symbol)
-            broker_tickets = {str(p["ticket"]) for p in broker_positions}
-
-            orphaned = [p for p in broker_positions if str(p["ticket"]) not in db_tickets]
-            if orphaned:
-                logger.warning(
-                    "Startup reconciliation: %d orphaned broker position(s) not tracked in DB: %s",
-                    len(orphaned),
-                    [p["ticket"] for p in orphaned],
-                )
-                self._trading_system.memory.set_runtime_state(
-                    "orphaned_positions",
-                    {
-                        "positions": orphaned,
-                        "detected_at": datetime.now(_UTC).isoformat(),
-                        "count": len(orphaned),
-                    },
-                )
-
-            externally_closed = [
-                t for t in open_trades
-                if t.get("broker_ticket") and str(t["broker_ticket"]) not in broker_tickets
-            ]
-            if externally_closed:
-                logger.warning(
-                    "Startup reconciliation: %d DB open trade(s) missing from MT5 (externally closed?): %s",
-                    len(externally_closed),
-                    [t.get("broker_ticket") for t in externally_closed],
-                )
-
             logger.info(
                 "Startup reconciliation complete: db=%d, broker=%d, orphaned=%d, externally_closed=%d",
-                len(open_trades), len(broker_positions), len(orphaned), len(externally_closed),
+                total_db, total_broker, total_orphaned, total_ext_closed,
             )
         except Exception as exc:
             logger.warning("Position sync failed: %s", exc)
@@ -394,9 +393,19 @@ class LiveRuntime:
     def _run_health_checks(self) -> None:
         if self._trading_system is None:
             return
-        # Telegram liveness — thread can die after a Conflict or network error
+        # Telegram liveness — thread can die after a Conflict or network error; auto-restart
         tg = self._trading_system.telegram
-        self._health.telegram_connected = tg.enabled and tg._thread is not None and tg._thread.is_alive()
+        tg_alive = tg.enabled and tg._thread is not None and tg._thread.is_alive()
+        self._health.telegram_connected = tg_alive
+        if tg.enabled and not tg_alive:
+            logger.info("LiveRuntime: Telegram thread gestopt — herstart polling")
+            try:
+                tg.start_in_background()
+                self._health.telegram_connected = (
+                    tg._thread is not None and tg._thread.is_alive()
+                )
+            except Exception as exc:
+                logger.warning("Telegram herstart mislukt: %s", exc)
         # MT5 ping
         try:
             from autonomous_xauusd.settings import load_settings
@@ -449,7 +458,7 @@ class LiveRuntime:
         self._log_event("shutdown", {})
 
         if self._trading_system is not None:
-            await asyncio.get_event_loop().run_in_executor(
+            await asyncio.get_running_loop().run_in_executor(
                 self._executor, self._shutdown_trading_system
             )
 
@@ -466,7 +475,7 @@ class LiveRuntime:
             logger.warning("Shutdown error: %s", exc)
 
     def _install_signal_handlers(self) -> None:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _handle_signal(signame: str) -> None:
             logger.info("Signal %s received — requesting stop", signame)

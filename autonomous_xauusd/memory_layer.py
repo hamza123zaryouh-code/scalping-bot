@@ -50,8 +50,8 @@ class TradeLog(Base):
     reward_risk_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     meta: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class ModelSnapshot(Base):
@@ -68,7 +68,7 @@ class ModelSnapshot(Base):
     parameter_overrides: Mapped[dict[str, Any]] = mapped_column(JSON)
     model_path: Mapped[str] = mapped_column(String(512))
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class RuntimeState(Base):
@@ -76,7 +76,7 @@ class RuntimeState(Base):
 
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value: Mapped[dict[str, Any]] = mapped_column(JSON)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class ControlCommand(Base):
@@ -90,7 +90,7 @@ class ControlCommand(Base):
     status: Mapped[str] = mapped_column(String(32), index=True, default="pending")
     result_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -103,7 +103,7 @@ class TelegramActionLog(Base):
     action: Mapped[str] = mapped_column(String(128), index=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
     details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
 class MemoryLayer:
@@ -150,7 +150,7 @@ class MemoryLayer:
     def get_runtime_state(self, key: str) -> dict[str, Any] | None:
         with self.session_scope() as session:
             state = session.get(RuntimeState, key)
-            return dict(state.value) if state else None
+            return state.value if state else None
 
     def set_runtime_state(self, key: str, value: dict[str, Any]) -> None:
         with self.session_scope() as session:
@@ -168,6 +168,14 @@ class MemoryLayer:
             "signals_enabled": True,
             "emergency_stop": False,
         }
+
+    def save_circuit_breaker_state(self, state: dict[str, Any]) -> None:
+        """Sla de dagelijkse CB-tracking state op zodat een herstart veilig verder kan."""
+        self.set_runtime_state("circuit_breaker_daily_state", state)
+
+    def load_circuit_breaker_state(self) -> dict[str, Any] | None:
+        """Laad de eerder opgeslagen CB-state. Geeft None terug als er niets opgeslagen is."""
+        return self.get_runtime_state("circuit_breaker_daily_state")
 
     def set_bot_control_state(self, **updates: Any) -> dict[str, Any]:
         current = self.get_bot_control_state()

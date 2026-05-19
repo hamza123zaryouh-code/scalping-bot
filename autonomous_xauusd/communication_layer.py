@@ -12,6 +12,17 @@ import httpx
 from autonomous_xauusd.memory_layer import MemoryLayer
 from autonomous_xauusd.settings import load_settings
 
+# Lazy-imported at runtime to avoid circular dependencies
+_TelegramService: Any = None
+
+
+def _get_telegram_service_class() -> Any:
+    global _TelegramService
+    if _TelegramService is None:
+        from backend.services.telegram_service import TelegramService  # noqa: PLC0415
+        _TelegramService = TelegramService
+    return _TelegramService
+
 _MAX_TG_LEN = 4000
 _TRUNCATED_SUFFIX = "\n…(ingekort)"
 
@@ -40,6 +51,12 @@ except ImportError:  # pragma: no cover
 
 
 logger = logging.getLogger(__name__)
+
+
+class _RequiresConfirmation(Exception):
+    """Raised by _dispatch_control when the action needs user confirmation."""
+    def __init__(self, action: str) -> None:
+        self.action = action
 
 
 class TelegramBackendClient:
@@ -100,6 +117,8 @@ class TelegramControlLayer:
         self._polling_stop = threading.Event()
         self._polling_conflict = threading.Event()
         self._callback_last_time: dict[str, float] = {}
+        self._backend_warn_at: dict[str, float] = {}  # path -> last warning time
+        self._unauthorized_warn_at: dict[str, float] = {}  # user_id -> last warning time
         self._backend = TelegramBackendClient(
             api_key=backend_api_key,
             base_url=backend_base_url,
@@ -107,6 +126,19 @@ class TelegramControlLayer:
         )
         self._memory = MemoryLayer(load_settings().database_url)
         self._memory.initialize()
+
+        # Embedded local service — makes all buttons work without a separate backend process
+        self._service: Any = None
+        try:
+            svc_cls = _get_telegram_service_class()
+            self._service = svc_cls()
+            logger.info("TelegramControlLayer: embedded service actief — backend HTTP niet nodig")
+        except Exception as exc:
+            logger.warning(
+                "TelegramControlLayer: embedded service kon niet starten (%s); "
+                "knoppen vallen terug op HTTP backend",
+                exc,
+            )
 
         if token and chat_id and not TELEGRAM_AVAILABLE:
             logger.warning("python-telegram-bot is not installed; Telegram control layer is disabled.")
@@ -128,17 +160,21 @@ class TelegramControlLayer:
         if not self.enabled:
             return False
 
-        try:
-            url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-            httpx.post(
-                url,
-                json={"chat_id": self.chat_id, "text": _truncate(message)},
-                timeout=30.0,
-            ).raise_for_status()
-            return True
-        except Exception as exc:  # pragma: no cover - network dependent
-            logger.warning("Telegram notification failed: %s", exc)
-            return False
+        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        payload = {"chat_id": self.chat_id, "text": _truncate(message)}
+        delays = (0, 3, 8)  # immediate, then 3s, then 8s
+        for attempt, delay in enumerate(delays):
+            if delay:
+                time.sleep(delay)
+            try:
+                httpx.post(url, json=payload, timeout=30.0).raise_for_status()
+                return True
+            except Exception as exc:  # pragma: no cover - network dependent
+                if attempt == len(delays) - 1:
+                    logger.warning("Telegram notification failed after %d attempts: %s", len(delays), exc)
+                else:
+                    logger.debug("Telegram notify attempt %d failed, retrying: %s", attempt + 1, exc)
+        return False
 
     def _run_polling(self) -> None:
         try:
@@ -199,23 +235,107 @@ class TelegramControlLayer:
                 reply_markup=self._main_menu_keyboard(),
             )
 
+    def _should_warn_backend(self, key: str, interval: float = 300.0) -> bool:
+        now = time.monotonic()
+        if now - self._backend_warn_at.get(key, 0.0) >= interval:
+            self._backend_warn_at[key] = now
+            return True
+        return False
+
+    # ── Lokale service router (geen HTTP vereist) ─────────────────────────────
+
+    def _local_get(self, path: str) -> dict[str, Any]:
+        """Routeer GET pad naar embedded TelegramService methode."""
+        svc = self._service
+        if svc is None:
+            raise RuntimeError("Embedded service niet beschikbaar")
+        route = path.split("?")[0].rstrip("/")
+        if not route.startswith("/api/v1/telegram/"):
+            raise ValueError(f"Onbekend pad: {path}")
+        seg = route[len("/api/v1/telegram/"):]
+
+        if seg == "status":
+            return {"data": svc.get_status_overview()}
+        if seg.startswith("risk/"):
+            return {"data": svc.get_risk_status(seg[5:])}
+        if seg.startswith("signals/"):
+            return {"data": svc.get_signal_snapshot(seg[8:])}
+        if seg == "backtest/latest":
+            return {"data": svc.get_latest_backtest_result()}
+        if seg == "backtest/compare":
+            return {"data": svc.compare_strategy_versions()}
+        if seg == "backtest/equity-curve-summary":
+            return {"data": svc.get_equity_curve_summary()}
+        if seg.startswith("memory/"):
+            return {"data": svc.get_memory_snapshot(seg[7:])}
+        if seg.startswith("reports/"):
+            return {"data": svc.build_report_snapshot(seg[8:])}
+        raise ValueError(f"Geen lokale handler voor GET {path}")
+
+    def _local_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Routeer POST pad naar embedded TelegramService methode."""
+        svc = self._service
+        if svc is None:
+            raise RuntimeError("Embedded service niet beschikbaar")
+        route = path.split("?")[0].rstrip("/")
+        if not route.startswith("/api/v1/telegram/"):
+            raise ValueError(f"Onbekend pad: {path}")
+        seg = route[len("/api/v1/telegram/"):]
+
+        user_id = str(payload.get("telegram_user_id", self.owner_user_id) or self.owner_user_id)
+        username = payload.get("telegram_username")
+        confirmed = bool(payload.get("confirmed", False))
+
+        if seg.startswith("control/"):
+            action = seg[8:]
+            return {"data": svc.handle_control_action(action, user_id, username, confirmed)}
+        if seg == "signals/toggle":
+            return {"data": svc.toggle_signals(bool(payload.get("enabled", True)), user_id, username)}
+        if seg == "backtest/quick-run":
+            return {"data": svc.run_quick_backtest(user_id, username)}
+        if seg == "memory/train":
+            return {"data": svc.handle_control_action("train_ai", user_id, username, confirmed=True)}
+        if seg == "reports/export-trade-log":
+            return {"data": svc.export_trade_log(user_id, username)}
+        raise ValueError(f"Geen lokale handler voor POST {path}")
+
+    # ── Backend GET / POST met lokale service als primaire bron ──────────────
+
     async def _backend_get(self, path: str, fallback_text: str | None = None) -> dict[str, Any]:
-        """GET via backend; returns a synthetic response dict on connectivity failure."""
+        """GET via embedded service (primair) of HTTP backend (fallback)."""
+        if self._service is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                return await loop.run_in_executor(None, self._local_get, path)
+            except Exception as exc:
+                logger.warning("Embedded service GET %s mislukt: %s", path, exc)
+
+        # HTTP backend fallback
         try:
             return await self._backend.get(path)
         except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-            logger.warning("Backend GET %s unavailable (%s); using fallback", path, exc)
+            if self._should_warn_backend(f"GET:{path}"):
+                logger.warning("Backend GET %s unavailable (%s); using fallback", path, exc)
             text = fallback_text or "Backend tijdelijk niet beschikbaar. Probeer opnieuw."
             return {"data": {"summary": text}}
 
     async def _backend_post(
         self, path: str, payload: dict[str, Any], fallback_text: str | None = None
     ) -> dict[str, Any]:
-        """POST via backend; returns a synthetic response dict on connectivity failure."""
+        """POST via embedded service (primair) of HTTP backend (fallback)."""
+        if self._service is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                return await loop.run_in_executor(None, self._local_post, path, payload)
+            except Exception as exc:
+                logger.warning("Embedded service POST %s mislukt: %s", path, exc)
+
+        # HTTP backend fallback
         try:
             return await self._backend.post(path, payload)
         except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-            logger.warning("Backend POST %s unavailable (%s); using fallback", path, exc)
+            if self._should_warn_backend(f"POST:{path}"):
+                logger.warning("Backend POST %s unavailable (%s); using fallback", path, exc)
             text = fallback_text or "Backend tijdelijk niet beschikbaar. Probeer opnieuw."
             return {"data": {"summary": text, "requires_confirmation": False, "status": "error", "command_id": None}}
 
@@ -268,6 +388,12 @@ class TelegramControlLayer:
                 return
 
             await self._handle_action(update, query, data)
+        except _RequiresConfirmation as exc:
+            await query.answer("Bevestiging nodig")
+            await query.edit_message_text(
+                f"Weet je zeker dat je '{self._button_label(exc.action)}' wilt uitvoeren?",
+                reply_markup=self._confirmation_keyboard(exc.action),
+            )
         except httpx.HTTPStatusError as exc:
             logger.warning("Telegram backend HTTP error: %s", exc)
             self._log_user_action(update, data, "error", {"detail": str(exc)})
@@ -312,102 +438,107 @@ class TelegramControlLayer:
 
     async def _handle_action(self, update: Update, query, data: str) -> None:
         await query.answer()
-        if data == "status:overview":
-            fallback = self.status_callback() if self.status_callback else None
-            response = await self._backend_get("/api/v1/telegram/status", fallback_text=fallback)
-            text = response["data"]["summary"]
-            keyboard = self._dashboard_keyboard()
-        elif data.startswith("status:"):
-            fallback = self.status_callback() if self.status_callback else None
-            response = await self._backend_get("/api/v1/telegram/status", fallback_text=fallback)
-            text = self._format_status_detail(data.split(":", 1)[1], response["data"])
-            keyboard = self._dashboard_keyboard()
-        elif data.startswith("control:"):
-            action = data.split(":", 1)[1]
-            payload = self._identity_payload(update)
-            stop_fallback = (
-                self.stop_callback() if action in ("emergency_stop", "stop_bot") and self.stop_callback else None
-            )
-            response = await self._backend_post(
-                f"/api/v1/telegram/control/{action}", payload, fallback_text=stop_fallback
-            )
-            result = response["data"]
-            if result.get("requires_confirmation"):
-                self._log_user_action(update, action, "confirmation_required", {})
-                await query.answer("Bevestiging nodig")
-                await query.edit_message_text(
-                    f"Weet je zeker dat je '{self._button_label(action)}' wilt uitvoeren?",
-                    reply_markup=self._confirmation_keyboard(action),
-                )
-                return
-            text = result["summary"]
-            keyboard = self._menu_keyboard("control")
-        elif data.startswith("risk:"):
-            section = data.split(":", 1)[1]
-            response = await self._backend_get(f"/api/v1/telegram/risk/{section}")
-            text = response["data"]["summary"]
-            keyboard = self._menu_keyboard("risk")
-        elif data.startswith("signals_toggle:"):
-            enabled = data.endswith(":on")
-            response = await self._backend_post(
-                "/api/v1/telegram/signals/toggle",
-                {**self._identity_payload(update), "enabled": enabled},
-            )
-            text = response["data"]["summary"]
-            keyboard = self._menu_keyboard("signals")
-        elif data.startswith("signals:"):
-            section = data.split(":", 1)[1]
-            response = await self._backend_get(f"/api/v1/telegram/signals/{section}")
-            text = response["data"]["summary"]
-            keyboard = self._menu_keyboard("signals")
-        elif data == "backtest:quick_run":
-            response = await self._backend_post("/api/v1/telegram/backtest/quick-run", self._identity_payload(update))
-            text = response["data"]["summary"]
-            keyboard = self._menu_keyboard("backtest")
-        elif data == "backtest:latest":
-            response = await self._backend_get("/api/v1/telegram/backtest/latest")
-            text = response["data"]["summary"]
-            keyboard = self._menu_keyboard("backtest")
-        elif data == "backtest:compare":
-            response = await self._backend_get("/api/v1/telegram/backtest/compare")
-            text = response["data"]["summary"]
-            keyboard = self._menu_keyboard("backtest")
-        elif data == "backtest:equity_curve":
-            response = await self._backend_get("/api/v1/telegram/backtest/equity-curve-summary")
-            text = response["data"]["summary"]
-            keyboard = self._menu_keyboard("backtest")
-        elif data == "memory:train":
-            train_fallback = self.train_callback() if self.train_callback else None
-            response = await self._backend_post(
-                "/api/v1/telegram/memory/train", self._identity_payload(update), fallback_text=train_fallback
-            )
-            text = response["data"]["summary"]
-            keyboard = self._menu_keyboard("memory")
-        elif data.startswith("memory:"):
-            section = data.split(":", 1)[1]
-            response = await self._backend_get(f"/api/v1/telegram/memory/{section}")
-            text = response["data"]["summary"]
-            keyboard = self._menu_keyboard("memory")
-        elif data.startswith("reports:"):
-            section = data.split(":", 1)[1]
-            if section == "export_trade_log":
-                response = await self._backend_post(
-                    "/api/v1/telegram/reports/export-trade-log",
-                    self._identity_payload(update),
-                )
-            else:
-                response = await self._backend_get(f"/api/v1/telegram/reports/{section}")
-            text = response["data"]["summary"]
-            keyboard = self._menu_keyboard("reports")
-        else:
-            raise ValueError(f"Unsupported callback: {data}")
-
+        text, keyboard = await self._dispatch_action(update, data)
         self._log_user_action(update, data, "success", {"summary": text[:500]})
         try:
             await query.edit_message_text(_truncate(text), reply_markup=keyboard)
         except Exception as e:
             if "Message is not modified" not in str(e):
                 raise
+
+    async def _dispatch_action(self, update: Update, data: str) -> tuple[str, Any]:
+        if data == "status:overview":
+            fallback = self.status_callback() if self.status_callback else None
+            response = await self._backend_get("/api/v1/telegram/status", fallback_text=fallback)
+            return response["data"]["summary"], self._dashboard_keyboard()
+
+        if data.startswith("status:"):
+            fallback = self.status_callback() if self.status_callback else None
+            response = await self._backend_get("/api/v1/telegram/status", fallback_text=fallback)
+            return self._format_status_detail(data.split(":", 1)[1], response["data"]), self._dashboard_keyboard()
+
+        if data.startswith("control:"):
+            return await self._dispatch_control(update, data)
+
+        if data.startswith("risk:"):
+            section = data.split(":", 1)[1]
+            response = await self._backend_get(f"/api/v1/telegram/risk/{section}")
+            return response["data"]["summary"], self._menu_keyboard("risk")
+
+        if data.startswith("signals_toggle:"):
+            enabled = data.endswith(":on")
+            response = await self._backend_post(
+                "/api/v1/telegram/signals/toggle",
+                {**self._identity_payload(update), "enabled": enabled},
+            )
+            return response["data"]["summary"], self._menu_keyboard("signals")
+
+        if data.startswith("signals:"):
+            section = data.split(":", 1)[1]
+            response = await self._backend_get(f"/api/v1/telegram/signals/{section}")
+            return response["data"]["summary"], self._menu_keyboard("signals")
+
+        if data.startswith("backtest:"):
+            return await self._dispatch_backtest(update, data)
+
+        if data == "memory:train":
+            train_fallback = self.train_callback() if self.train_callback else None
+            response = await self._backend_post(
+                "/api/v1/telegram/memory/train", self._identity_payload(update), fallback_text=train_fallback
+            )
+            return response["data"]["summary"], self._menu_keyboard("memory")
+
+        if data.startswith("memory:"):
+            section = data.split(":", 1)[1]
+            response = await self._backend_get(f"/api/v1/telegram/memory/{section}")
+            return response["data"]["summary"], self._menu_keyboard("memory")
+
+        if data.startswith("reports:"):
+            return await self._dispatch_reports(update, data)
+
+        raise ValueError(f"Unsupported callback: {data}")
+
+    async def _dispatch_control(self, update: Update, data: str) -> tuple[str, Any]:
+        action = data.split(":", 1)[1]
+        payload = self._identity_payload(update)
+        stop_fallback = (
+            self.stop_callback() if action in ("emergency_stop", "stop_bot") and self.stop_callback else None
+        )
+        response = await self._backend_post(
+            f"/api/v1/telegram/control/{action}", payload, fallback_text=stop_fallback
+        )
+        result = response["data"]
+        if result.get("requires_confirmation"):
+            self._log_user_action(update, action, "confirmation_required", {})
+            raise _RequiresConfirmation(action)
+        return result["summary"], self._menu_keyboard("control")
+
+    async def _dispatch_backtest(self, update: Update, data: str) -> tuple[str, Any]:
+        backtest_routes: dict[str, tuple[str, str | None]] = {
+            "backtest:quick_run": ("/api/v1/telegram/backtest/quick-run", "post"),
+            "backtest:latest": ("/api/v1/telegram/backtest/latest", None),
+            "backtest:compare": ("/api/v1/telegram/backtest/compare", None),
+            "backtest:equity_curve": ("/api/v1/telegram/backtest/equity-curve-summary", None),
+        }
+        if data not in backtest_routes:
+            raise ValueError(f"Unsupported backtest callback: {data}")
+        path, method = backtest_routes[data]
+        if method == "post":
+            response = await self._backend_post(path, self._identity_payload(update))
+        else:
+            response = await self._backend_get(path)
+        return response["data"]["summary"], self._menu_keyboard("backtest")
+
+    async def _dispatch_reports(self, update: Update, data: str) -> tuple[str, Any]:
+        section = data.split(":", 1)[1]
+        if section == "export_trade_log":
+            response = await self._backend_post(
+                "/api/v1/telegram/reports/export-trade-log",
+                self._identity_payload(update),
+            )
+        else:
+            response = await self._backend_get(f"/api/v1/telegram/reports/{section}")
+        return response["data"]["summary"], self._menu_keyboard("reports")
 
     async def _deny_access(self, update: Update, action: str, query=None) -> None:
         self._log_user_action(update, action, "denied", {"owner_user_id": self.owner_user_id})
@@ -426,7 +557,14 @@ class TelegramControlLayer:
         user = update.effective_user
         if user is None:
             return False
-        return str(user.id) == self.owner_user_id
+        authorized = str(user.id) == self.owner_user_id
+        if not authorized:
+            uid = str(user.id)
+            now = time.monotonic()
+            if now - self._unauthorized_warn_at.get(uid, 0.0) >= 300.0:
+                self._unauthorized_warn_at[uid] = now
+                logger.warning("Unauthorized Telegram access attempt from user_id=%s", uid)
+        return authorized
 
     def _identity_payload(self, update: Update, confirmed: bool = False) -> dict[str, Any]:
         user = update.effective_user

@@ -347,7 +347,7 @@ class LiveExecutionEngine:
                 "stop_loss": float(pos.sl),
                 "take_profit": float(pos.tp),
                 "profit": float(pos.profit),
-                "opened_at": datetime.utcfromtimestamp(int(pos.time)).isoformat(),
+                "opened_at": datetime.fromtimestamp(int(pos.time), tz=timezone.utc).isoformat(),
                 "magic": int(pos.magic),
             })
         return result
@@ -376,7 +376,13 @@ class LiveExecutionEngine:
 
         order_type = mt5.ORDER_TYPE_BUY if side == "buy" else mt5.ORDER_TYPE_SELL
         requested_price = float(tick.ask if side == "buy" else tick.bid)
-        filling_mode = getattr(symbol_info, "filling_mode", mt5.ORDER_FILLING_IOC)
+        fm_bits = getattr(symbol_info, "filling_mode", 0)
+        if fm_bits & 1:
+            filling_mode = mt5.ORDER_FILLING_FOK
+        elif fm_bits & 2:
+            filling_mode = mt5.ORDER_FILLING_IOC
+        else:
+            filling_mode = mt5.ORDER_FILLING_RETURN
 
         request: dict[str, Any] = {
             "action": mt5.TRADE_ACTION_DEAL,

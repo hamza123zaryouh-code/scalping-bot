@@ -222,6 +222,22 @@ class NewsAnalysis:
 
 
 # ─────────────────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────────────────
+
+_NEGATION_PREFIXES = ("no ", "not ", "without ", "halts ", "pauses ", "ends ", "avoids ", "prevents ")
+_NEGATION_WINDOW = 6  # words to look back for a negation
+
+
+def _is_negated(text: str, match_idx: int) -> bool:
+    """Return True if the keyword at match_idx is preceded by a negation word."""
+    preceding = text[max(0, match_idx - 40): match_idx]
+    words = preceding.split()[-_NEGATION_WINDOW:]
+    joined = " ".join(words)
+    return any(joined.endswith(prefix.rstrip()) or (prefix in joined) for prefix in _NEGATION_PREFIXES)
+
+
+# ─────────────────────────────────────────────────────────────────
 # MAIN ENGINE
 # ─────────────────────────────────────────────────────────────────
 
@@ -244,6 +260,7 @@ class LiveNewsEngine:
         self._newsapi_key = newsapi_key or os.getenv("NEWSAPI_KEY", "").strip()
         self._cached_analysis: NewsAnalysis | None = None
         self._cached_at: float = 0.0
+        self._no_headlines_warned_at: float = 0.0
         _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     def get_analysis(self, force_refresh: bool = False) -> NewsAnalysis:
@@ -265,7 +282,9 @@ class LiveNewsEngine:
 
         items = self._fetch_all_sources()
         if not items:
-            logger.warning("LiveNewsEngine: no headlines fetched — returning neutral analysis")
+            if time.time() - self._no_headlines_warned_at > 3600:
+                logger.warning("LiveNewsEngine: no headlines fetched — returning neutral analysis (bericht 1x/uur)")
+                self._no_headlines_warned_at = time.time()
             return self._neutral_analysis()
 
         analysis = self._analyze(items)
@@ -465,15 +484,17 @@ class LiveNewsEngine:
             text = f"{item.title} {item.summary}".lower()
             sources.add(item.source.split(":")[0])
 
-            # Keyword scoring
+            # Keyword scoring — with negation guard to avoid "no rate cut" scoring as bullish
             bull_matches: list[str] = []
             bear_matches: list[str] = []
             for kw in _BULLISH_KEYWORDS:
-                if kw in text:
+                kw_pos = text.find(kw)
+                if kw_pos != -1 and not _is_negated(text, kw_pos):
                     bull_matches.append(kw)
                     keyword_freq[kw] = keyword_freq.get(kw, 0) + 1
             for kw in _BEARISH_KEYWORDS:
-                if kw in text:
+                kw_pos = text.find(kw)
+                if kw_pos != -1 and not _is_negated(text, kw_pos):
                     bear_matches.append(kw)
                     keyword_freq[kw] = keyword_freq.get(kw, 0) + 1
 

@@ -78,6 +78,12 @@ class XAUUSDSettings:
     sentiment_symbol: str
     sentiment_cache_minutes: int
     sentiment_filter_threshold: float
+    ftmo_start_capital: float
+    ftmo_max_daily_loss: float
+    ftmo_max_weekly_loss: float
+    ftmo_max_total_drawdown: float
+    ftmo_daily_buffer: float
+    max_lot_size: float
 
     @property
     def mt5_ready(self) -> bool:
@@ -130,10 +136,9 @@ def load_settings(base_dir: Path | None = None) -> XAUUSDSettings:
             return default
         return tuple(int(part.strip()) for part in raw.split(",") if part.strip())
 
-    # Resolve trading mode from the current process environment before loading .env.
-    # This keeps unit tests deterministic and avoids accidentally inheriting a
-    # checked-in live mode when callers did not explicitly request it.
-    mode = os.getenv("AUTONOMOUS_MODE", "").strip().lower() or "paper"
+    # Resolve trading mode — process env overrides .env; .env overrides default.
+    # Using _read() ensures .env is honoured when the process env is not set.
+    mode = _read("AUTONOMOUS_MODE", "paper").strip().lower() or "paper"
 
     postgres_url = (
         _read("POSTGRES_URL", "").strip()
@@ -227,4 +232,10 @@ def load_settings(base_dir: Path | None = None) -> XAUUSDSettings:
         sentiment_symbol=_read("SENTIMENT_SYMBOL", "GC=F").strip() or "GC=F",
         sentiment_cache_minutes=_read_int("SENTIMENT_CACHE_MINUTES", 30),
         sentiment_filter_threshold=_read_float("SENTIMENT_FILTER_THRESHOLD", 0.5),
+        ftmo_start_capital=_read_float("FTMO_START_CAPITAL", 160_000.0),
+        ftmo_max_daily_loss=_read_float("FTMO_MAX_DAILY_LOSS", 6_000.0),
+        ftmo_max_weekly_loss=_read_float("FTMO_MAX_WEEKLY_LOSS", 10_000.0),
+        ftmo_max_total_drawdown=_read_float("FTMO_MAX_TOTAL_DRAWDOWN", 16_000.0),
+        ftmo_daily_buffer=_read_float("FTMO_DAILY_BUFFER", 400.0),
+        max_lot_size=_read_float("MAX_LOT_SIZE", 6.0),
     )

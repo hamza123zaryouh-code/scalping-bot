@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -90,6 +89,8 @@ class DataExecutionLayer:
         frame = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False)
         if frame.empty:
             raise RuntimeError(f"No market data returned for {ticker}")
+        if isinstance(frame.columns, pd.MultiIndex):
+            frame.columns = frame.columns.get_level_values(0)
         frame = frame.rename(columns=str.lower)
         if "volume" not in frame.columns:
             frame["volume"] = 0.0
@@ -128,7 +129,7 @@ class DataExecutionLayer:
         account = mt5.account_info()
         if account is None:
             raise RuntimeError("MT5 account info unavailable")
-        positions = mt5.positions_get(symbol=self.settings.symbol) or []
+        positions = mt5.positions_get() or []
         return {
             "balance": float(getattr(account, "balance", 0.0)),
             "equity": float(getattr(account, "equity", 0.0)),
@@ -410,7 +411,7 @@ class DataExecutionLayer:
     def _calculate_volume(self, equity: float, signal: SignalDecision, parameters: StrategyParameters) -> float:
         stop_distance = abs(signal.entry_price - signal.stop_loss)
         risk_pct = self._resolve_risk_pct(signal, parameters)
-        max_lot = float(os.getenv("MAX_LOT_SIZE", "6.0"))
+        max_lot = self.settings.max_lot_size
 
         if mt5 is not None and self.connected:
             symbol_info = mt5.symbol_info(signal.symbol)
