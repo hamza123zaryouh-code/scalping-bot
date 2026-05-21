@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from core.strategy_engine import V22_CFG
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -260,23 +262,8 @@ class StrategyConfigManager:
     """
 
     DEFAULT_STRATEGY_CFG = {
-        "risk_a": 0.0040,
-        "risk_b": 0.0030,
-        "risk_c": 0.0025,
-        "adx_min": 14,
-        "h4adx_min": 14,
-        "vol_mult": 1.00,
-        "tp1_r": 1.5,
-        "tp2_r": 2.5,
-        "tp3_r": 4.0,
-        "tp1_pct": 0.30,
-        "tp2_pct": 0.30,
-        "sl_atr": 1.5,
-        "sl_max": 2.0,
-        "max_dag": 6,
-        "sl_dag_max": 2,
-        "cooldown_h": 2,
-        "trailing": True,
+        **V22_CFG,
+        "symbols": ["XAUUSD", "EURUSD", "GBPUSD"],
         "max_spread": 350,
         "sentiment_enabled": True,
         "circuit_breaker_enabled": True,

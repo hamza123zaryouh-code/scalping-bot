@@ -5,7 +5,20 @@
       "Bash(dir \"c:\\\\Users\\\\hamza\\\\Downloads\\\\XAUUSD\\\\results\" /B)",
       "Bash(npm install *)",
       "Bash(pip show *)",
-      "Bash(python -c \"import yfinance; import pandas; import numpy; print\\('yfinance:', yfinance.__version__, 'pandas:', pandas.__version__, 'numpy:', numpy.__version__\\)\")"
+      "Bash(python -c \"import yfinance; import pandas; import numpy; print\\('yfinance:', yfinance.__version__, 'pandas:', pandas.__version__, 'numpy:', numpy.__version__\\)\")",
+      "Bash(python scripts/run_6month_backtest.py --v27)",
+      "Bash(python scripts/run_6month_backtest.py --v20)",
+      "Bash(python scripts/run_6month_backtest.py --v18)",
+      "Bash(python scripts/run_6month_backtest.py --v20 --start 2025-11-17 --end 2026-05-17)",
+      "Bash(python scripts/run_6month_backtest.py --v19)",
+      "Bash(python scripts/run_6month_backtest.py --scalp)",
+      "Bash(python scripts/run_6month_backtest.py --scalp-h1)",
+      "Bash(copy configs\\\\live_strategy.json configs\\\\live_strategy_v27_backup.json)",
+      "Bash(timeout 10 python scripts/run_live_bot.py --mode demo)",
+      "Bash(python scripts/run_6month_backtest.py --scalp-h1 --mt5)",
+      "Bash(python scripts/run_6month_backtest.py --scalp-h1 --mt5 --start 2025-05-20 --end 2026-05-20)",
+      "Bash(python scripts/run_6month_backtest.py --mt5-m15 --start 2025-11-17 --end 2026-05-17)",
+      "Bash(python scripts/run_6month_backtest.py --v27 --mt5 --start 2025-11-17 --end 2026-05-17)"
     ]
   }
 }

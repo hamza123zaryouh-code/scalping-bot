@@ -14,6 +14,8 @@ from autonomous_xauusd.memory_layer import MemoryLayer
 from autonomous_xauusd.settings import load_settings
 from backend.api.deps import get_current_user
 from backend.api.schemas.common import APIResponse
+from backend.services.log_stream_service import get_log_stream_service
+from backend.websocket.manager import CHANNELS, ws_manager
 from core.risk_engine import FTMO_DAILY_LOSS_LIMIT, FTMO_STARTING_CAPITAL, FTMO_TOTAL_LOSS_LIMIT, FTMOCompliance
 from core.session_engine import SessionEngine
 
@@ -22,22 +24,29 @@ router = APIRouter()
 
 _STATE_PATH = Path("live_logs/bot_state.json")
 _LOG_PATH = Path("live_logs/xauusd_live_bot.log")
+_HEARTBEAT_PATH = Path("live_logs/heartbeat.json")
+_NEWS_CACHE_PATH = Path("live_logs/news_cache.json")
 
 _session_engine = SessionEngine()
 _ftmo_compliance = FTMOCompliance()
 
 
 def _load_bot_state() -> dict:
-    if not _STATE_PATH.exists():
-        return {}
-    try:
-        return json.loads(_STATE_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return _read_json_file(_STATE_PATH)
 
 
 def _get_memory() -> MemoryLayer:
     return MemoryLayer(load_settings().database_url)
+
+
+def _read_json_file(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
 
 
 @router.get("/live", response_model=APIResponse[dict], summary="Full live dashboard snapshot V17")
@@ -177,6 +186,84 @@ async def live_dashboard(_user: dict = Depends(get_current_user)):
                 "last_signal": state.get("last_signal_time"),
                 "bot_cycles": state.get("cycle_count", 0),
                 "engine_version": "V17",
+            },
+        }
+    )
+
+
+@router.get("/command-center", response_model=APIResponse[dict], summary="Operator command center snapshot")
+async def command_center_snapshot(_user: dict = Depends(get_current_user)):
+    state = _load_bot_state()
+    heartbeat = _read_json_file(_HEARTBEAT_PATH)
+    news_cache = _read_json_file(_NEWS_CACHE_PATH)
+    log_svc = get_log_stream_service()
+    settings = load_settings()
+
+    memory = _get_memory()
+    control_state = memory.get_bot_control_state()
+    engine_status = memory.get_runtime_state("engine_status") or {}
+    circuit_breaker = memory.get_runtime_state("circuit_breaker") or {}
+    ftmo_guard = memory.get_runtime_state("ftmo_guard") or {}
+    news_guard = memory.get_runtime_state("news_guard") or {}
+    last_sentiment = memory.get_runtime_state("last_sentiment") or state.get("last_sentiment", {})
+    recent_actions = memory.recent_telegram_actions(limit=12)
+    recent_commands = memory.recent_control_commands(limit=12)
+
+    now = datetime.now(timezone.utc)
+    heartbeat_ts = heartbeat.get("ts")
+    heartbeat_age_seconds = None
+    if isinstance(heartbeat_ts, str):
+        try:
+            heartbeat_age_seconds = max(int((now - datetime.fromisoformat(heartbeat_ts)).total_seconds()), 0)
+        except ValueError:
+            heartbeat_age_seconds = None
+
+    return APIResponse(
+        data={
+            "timestamp": now.isoformat(),
+            "stream": {
+                "connected_clients": ws_manager.connected_count,
+                "available_channels": sorted(CHANNELS),
+                "last_log_seq": log_svc.last_seq(),
+                "heartbeat_present": bool(heartbeat),
+                "heartbeat_age_seconds": heartbeat_age_seconds,
+                "stale": heartbeat_age_seconds is None or heartbeat_age_seconds > 45,
+                "bot_state_present": bool(state),
+            },
+            "heartbeat": heartbeat or {
+                "status": "api_only",
+                "trading_bot_running": False,
+                "ts": now.isoformat(),
+            },
+            "runtime": {
+                "engine_status": engine_status,
+                "control_state": control_state,
+                "circuit_breaker": circuit_breaker,
+                "ftmo_guard": ftmo_guard,
+                "news_guard": news_guard,
+                "sentiment": last_sentiment if isinstance(last_sentiment, dict) else {},
+                "last_signal": state.get("last_signal"),
+                "open_positions": state.get("open_positions", []),
+            },
+            "telegram": {
+                "configured": settings.telegram_ready,
+                "owner_configured": bool(settings.telegram_owner_user_id),
+                "api_key_configured": bool(settings.telegram_control_api_key),
+                "backend_base_url": settings.telegram_backend_base_url,
+                "recent_actions": recent_actions,
+                "recent_commands": recent_commands,
+            },
+            "news": {
+                "cache_present": bool(news_cache),
+                "danger_score": news_cache.get("danger_score", 0.0),
+                "high_impact_count": news_cache.get("high_impact_count", 0),
+                "composite_sentiment": news_cache.get("composite_sentiment", 0.0),
+                "should_pause_trading": news_cache.get("should_pause_trading", False),
+                "top_keywords": news_cache.get("top_keywords", [])[:6],
+            },
+            "logs": {
+                "records": log_svc.get_recent(n=20),
+                "tail_file_available": _LOG_PATH.exists(),
             },
         }
     )

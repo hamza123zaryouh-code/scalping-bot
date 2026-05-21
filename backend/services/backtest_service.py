@@ -414,6 +414,110 @@ class BacktestService:
                 base[key] = value
         return base
 
+    def _fetch_data_mt5(self, start_date, end_date, symbol: str = "XAUUSD", timeframe_str: str = "H1") -> pd.DataFrame:
+        """
+        Haalt historische data op via MetaTrader5 Python library.
+        Voordeel: echte broker XAUUSD data (geen GC=F futures approximatie).
+        Vereist: MT5 terminal open + ingelogd op FTMO demo account.
+        """
+        try:
+            import MetaTrader5 as mt5
+        except ImportError:
+            raise FileNotFoundError("MetaTrader5 Python library niet geinstalleerd — pip install MetaTrader5")
+
+        from dotenv import dotenv_values
+        env = dotenv_values(Path(__file__).resolve().parents[2] / ".env")
+
+        tf_map = {
+            "M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5, "M15": mt5.TIMEFRAME_M15,
+            "M30": mt5.TIMEFRAME_M30, "H1": mt5.TIMEFRAME_H1, "H4": mt5.TIMEFRAME_H4,
+            "D1": mt5.TIMEFRAME_D1,
+        }
+        tf = tf_map.get(timeframe_str.upper(), mt5.TIMEFRAME_H1)
+
+        login = int(env.get("MT5_LOGIN", 0))
+        password = env.get("MT5_PASSWORD", "")
+        server = env.get("MT5_SERVER", "")
+
+        if not mt5.initialize(login=login, password=password, server=server):
+            raise ConnectionError(f"MT5 verbinding mislukt: {mt5.last_error()}")
+
+        try:
+            start_with_buffer = pd.Timestamp(start_date, tz="UTC") - pd.Timedelta(days=90)
+            end_ts = pd.Timestamp(end_date, tz="UTC") + pd.Timedelta(days=1)
+
+            rates = mt5.copy_rates_range(
+                symbol, tf,
+                start_with_buffer.to_pydatetime(),
+                end_ts.to_pydatetime(),
+            )
+            if rates is None or len(rates) == 0:
+                raise FileNotFoundError(f"Geen MT5 data voor {symbol} {timeframe_str}: {mt5.last_error()}")
+        finally:
+            mt5.shutdown()
+
+        df = pd.DataFrame(rates)
+        df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+        df = df.set_index("time")
+        df = df.rename(columns={"tick_volume": "volume"})
+        df = df[["open", "high", "low", "close", "volume"]].dropna()
+        logger.info("MT5 data geladen: %d %s bars voor %s (%s -> %s)",
+                    len(df), timeframe_str, symbol, df.index[0].date(), df.index[-1].date())
+        return df
+
+    def _fetch_data_m15(self, start_date, end_date) -> pd.DataFrame:
+        """
+        Haalt M15 (15-minuten) data op via yfinance voor intraday backtests.
+        yfinance limiet: max 60 dagen terug voor 15m interval.
+        """
+        try:
+            import yfinance as yf
+        except ImportError:
+            raise FileNotFoundError("yfinance niet beschikbaar — pip install yfinance")
+
+        # M15 heeft 60-dagen limiet — zorg dat start niet te ver terug gaat
+        cutoff = pd.Timestamp.utcnow() - pd.Timedelta(days=58)
+        start_ts = pd.Timestamp(start_date, tz="UTC")
+        if start_ts < cutoff:
+            logger.warning("M15 data limiet: start aangepast van %s naar %s", start_ts.date(), cutoff.date())
+            start_ts = cutoff
+
+        end_ts = pd.Timestamp(end_date, tz="UTC") + pd.Timedelta(days=1)
+        start_str = start_ts.strftime("%Y-%m-%d")
+        end_str = end_ts.strftime("%Y-%m-%d")
+
+        df = pd.DataFrame()
+        for attempt in range(3):
+            try:
+                cache_dir = YFINANCE_CACHE_DIR / f"m15_{attempt}"
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    yf.set_tz_cache_location(str(cache_dir))
+                except AttributeError:
+                    pass
+                df = yf.download(
+                    "GC=F",
+                    start=start_str,
+                    end=end_str,
+                    interval="15m",
+                    progress=False,
+                    auto_adjust=True,
+                )
+                if not df.empty:
+                    break
+                logger.warning("M15 yfinance poging %d: lege dataset", attempt + 1)
+            except Exception as e:
+                logger.warning("M15 yfinance poging %d mislukt: %s", attempt + 1, e)
+
+        if df.empty:
+            raise FileNotFoundError("Geen M15 data beschikbaar voor GC=F. Controleer verbinding of datum-range.")
+
+        df.columns = [c[0].lower() if isinstance(c, tuple) else c.lower() for c in df.columns]
+        df.index = pd.to_datetime(df.index, utc=True)
+        df = df[["open", "high", "low", "close", "volume"]].dropna()
+        logger.info("M15 data geladen: %d bars (%s → %s)", len(df), df.index[0].date(), df.index[-1].date())
+        return df
+
     def _fetch_data_symbol(self, symbol: str, start_date, end_date) -> pd.DataFrame:
         """Haalt H1 data op voor een willekeurig symbool via yfinance."""
         spec = SYMBOL_SPECS.get(symbol, SYMBOL_SPECS["XAUUSD"])
@@ -526,6 +630,18 @@ class BacktestService:
         loss_day_filter = bool(cfg.get("loss_day_filter", True))
         monthly_profit_target = float(cfg.get("monthly_profit_target", 0.0))
         max_concurrent = int(cfg.get("max_concurrent_positions", 2))
+        # Post-verliesweek bescherming (multi-symbol engine)
+        post_loss_wk_thr_ms = float(cfg.get("post_loss_week_threshold", 0.0))
+        post_loss_wk_scale_ms = float(cfg.get("post_loss_week_risk_scale", 1.0))
+        # Post-winstweek bescherming (multi-symbol engine)
+        post_win_wk_thr_ms = float(cfg.get("post_win_week_threshold", 0.0))
+        post_win_wk_scale_ms = float(cfg.get("post_win_week_risk_scale", 1.0))
+        # Vroege breakeven vóór TP1 (multi-symbol engine)
+        early_be_r_ms = float(cfg.get("breakeven_r", 0.55))
+        # Recent SL block (multi-symbol engine)
+        rsl_thr_ms = int(cfg.get("recent_sl_block_threshold", 0))
+        rsl_lookback_ms = int(cfg.get("recent_sl_lookback", 4))
+        rsl_block_sigs_ms = {str(s) for s in cfg.get("recent_sl_block_signals", ())}
 
         # ── Gedeeld kapitaal ──────────────────────────────────────
         kap = float(starting_capital)
@@ -539,6 +655,8 @@ class BacktestService:
         _compound_multiplier = 1.0
         _current_month_str = ""
         _month_start_equity = kap
+        _prev_week_loss_ms: bool = False   # post-verliesweek bescherming (multi-symbol)
+        _prev_week_win_ms: bool = False    # post-winstweek bescherming (multi-symbol)
 
         # ── Per-paar toestand ─────────────────────────────────────
         sym_state: dict[str, dict] = {}
@@ -549,6 +667,7 @@ class BacktestService:
                 "richting": 1, "sig_type": "", "ot": None,
                 "risk_rem": 0.0, "tp1_hit": False, "tp2_hit": False,
                 "last_ts": None, "lot_size": 0.01,
+                "orig_sl_dist": 0.0,  # vast bij opening — nooit overschrijven
             }
 
         # ── Gesorteerde tijdlijn van alle bars ────────────────────
@@ -575,11 +694,14 @@ class BacktestService:
                 _current_week = bar_week
                 _week_start_eq = kap
             elif bar_week != _current_week:
+                _wk_ret_ms = (kap - _week_start_eq) / max(_week_start_eq, 1)
                 if weekly_compound:
                     if kap > _week_start_eq:
                         _compound_multiplier = min(_compound_multiplier * compound_boost, 1.40)
                     else:
                         _compound_multiplier = max(_compound_multiplier * compound_decay, 1.0)
+                _prev_week_loss_ms = post_loss_wk_thr_ms != 0 and _wk_ret_ms <= post_loss_wk_thr_ms
+                _prev_week_win_ms = post_win_wk_thr_ms > 0 and _wk_ret_ms >= post_win_wk_thr_ms
                 _current_week = bar_week
                 _week_start_eq = kap
 
@@ -593,8 +715,7 @@ class BacktestService:
             if kap < ftmo_floor_eur:
                 if st["ip"]:
                     ep = float(b["close"])
-                    sl_dist = abs(st["entry"] - st["sl"])
-                    pnl = st["richting"] * (ep - st["entry"]) / max(sl_dist, 1e-10) * st["risk_rem"]
+                    pnl = st["richting"] * (ep - st["entry"]) / max(st["orig_sl_dist"], 1e-10) * st["risk_rem"]
                     kap += pnl
                     trs.append(self._make_tr(st["ot"], ts, st["richting"], st["entry"], ep,
                                              pnl, "FAIL", st["sig_type"], st["sl"], st["tp1"], kap, st["lot_size"]))
@@ -612,27 +733,36 @@ class BacktestService:
                     continue
                 r = st["richting"]
                 entry = st["entry"]
+                osd = st["orig_sl_dist"]  # originele SL-afstand — gebruik voor alle P&L formules
+
+                # Vroege breakeven vóór TP1
+                if not st["tp1_hit"] and early_be_r_ms > 0:
+                    float_r = r * (cl - entry) / osd
+                    if float_r >= early_be_r_ms:
+                        if r == 1 and st["sl"] < entry:
+                            st["sl"] = entry + 0.02 * osd
+                        elif r == -1 and st["sl"] > entry:
+                            st["sl"] = entry - 0.02 * osd
 
                 # Breakeven na TP1
-                be_r = cfg.get("breakeven_r", 0.55)
                 if st["tp1_hit"] and not st["tp2_hit"]:
                     if r == 1 and st["sl"] < entry:
-                        st["sl"] = entry + 0.05 * sl_dist
+                        st["sl"] = entry + 0.05 * osd
                     elif r == -1 and st["sl"] > entry:
-                        st["sl"] = entry - 0.05 * sl_dist
+                        st["sl"] = entry - 0.05 * osd
 
                 # Trailing stop na TP1
                 if trail_on and st["tp1_hit"]:
-                    float_pnl = r * (cl - entry) / sl_dist * st["risk_rem"]
+                    float_pnl = r * (cl - entry) / osd * st["risk_rem"]
                     if float_pnl > 500 and not st["tp2_hit"]:
-                        new_sl = entry + r * 0.4 * sl_dist
+                        new_sl = entry + r * 0.4 * osd
                         st["sl"] = max(st["sl"], new_sl) if r == 1 else min(st["sl"], new_sl)
 
                 # TP1
                 if not st["tp1_hit"]:
                     if (r == 1 and hi >= st["tp1"]) or (r == -1 and lo <= st["tp1"]):
                         if not ((r == 1 and lo <= st["sl"]) or (r == -1 and hi >= st["sl"])):
-                            pnl_tp1 = tp1_pct * st["risk_rem"] * ((st["tp1"] - entry) / sl_dist * r)
+                            pnl_tp1 = tp1_pct * st["risk_rem"] * ((st["tp1"] - entry) / osd * r)
                             kap += pnl_tp1
                             piek = max(piek, kap)
                             _day_net_pnl[bar_date] = _day_net_pnl.get(bar_date, 0.0) + pnl_tp1
@@ -645,7 +775,7 @@ class BacktestService:
                 # TP2
                 if st["tp1_hit"] and not st["tp2_hit"]:
                     if (r == 1 and hi >= st["tp2"]) or (r == -1 and lo <= st["tp2"]):
-                        pnl_tp2 = tp2_frac_base * st["risk_rem"] * ((st["tp2"] - entry) / sl_dist * r)
+                        pnl_tp2 = tp2_frac_base * st["risk_rem"] * ((st["tp2"] - entry) / osd * r)
                         kap += pnl_tp2
                         piek = max(piek, kap)
                         _day_net_pnl[bar_date] = _day_net_pnl.get(bar_date, 0.0) + pnl_tp2
@@ -658,7 +788,7 @@ class BacktestService:
                 # TP3
                 if st["tp1_hit"] and st["tp2_hit"]:
                     if (r == 1 and hi >= st["tp3"]) or (r == -1 and lo <= st["tp3"]):
-                        pnl_tp3 = st["risk_rem"] * ((st["tp3"] - entry) / sl_dist * r)
+                        pnl_tp3 = st["risk_rem"] * ((st["tp3"] - entry) / osd * r)
                         kap += pnl_tp3
                         piek = max(piek, kap)
                         _day_net_pnl[bar_date] = _day_net_pnl.get(bar_date, 0.0) + pnl_tp3
@@ -671,7 +801,7 @@ class BacktestService:
                 # SL check
                 hit_sl = (r == 1 and lo <= st["sl"]) or (r == -1 and hi >= st["sl"])
                 if hit_sl:
-                    pnl_sl = st["risk_rem"] * ((st["sl"] - entry) / sl_dist * r)
+                    pnl_sl = st["risk_rem"] * ((st["sl"] - entry) / osd * r)
                     if pnl_sl < 0:
                         rem_lim = max(0.0, ftmo_dag_eur - dag[bar_date]["loss"])
                         if abs(pnl_sl) > rem_lim:
@@ -748,8 +878,10 @@ class BacktestService:
             elif dd_pct > 0.01:
                 risk_pct *= 0.80
 
-            # Loss streak
-            recent_sl = sum(1 for t in trs[-4:] if t["result"] == "SL" and t["pnl"] < 0)
+            # Loss streak + configureerbare SL-blokkering
+            recent_sl = sum(1 for t in trs[-max(rsl_lookback_ms, 4):] if t["result"] == "SL" and t["pnl"] < 0)
+            if rsl_thr_ms > 0 and recent_sl >= rsl_thr_ms and sig_type in rsl_block_sigs_ms:
+                continue
             if recent_sl >= 3:
                 risk_pct *= 0.50
 
@@ -765,6 +897,13 @@ class BacktestService:
                     if sig_type in weekly_loss_block_signals:
                         continue
                     risk_pct *= weekly_loss_risk_scale
+
+            # Post-winstweek bescherming
+            if _prev_week_win_ms and post_win_wk_scale_ms < 1.0:
+                risk_pct *= post_win_wk_scale_ms
+            # Post-verliesweek bescherming
+            if _prev_week_loss_ms and post_loss_wk_scale_ms < 1.0:
+                risk_pct *= post_loss_wk_scale_ms
 
             # Dagwinst-lock
             if daily_profit_lock_pct > 0:
@@ -789,6 +928,7 @@ class BacktestService:
                 risk_rem = actual_risk_usd / _EUR_USD_RATE
 
             richting = 1 if signal.direction == "long" else -1
+            sl_dist_open = abs(cl_pr - signal.stop_loss)
             st["ip"] = True
             st["entry"] = cl_pr
             st["sl"] = signal.stop_loss
@@ -803,6 +943,7 @@ class BacktestService:
             st["tp2_hit"] = False
             st["last_ts"] = ts
             st["lot_size"] = lot_size
+            st["orig_sl_dist"] = sl_dist_open  # vast bij opening — nooit overschrijven
             dag[bar_date]["n"] += 1
 
             # Sla symbool op in trade record (via stype field)
@@ -816,8 +957,7 @@ class BacktestService:
             if st["ip"]:
                 df = symbol_dfs[sym]
                 ep = float(df.iloc[-1]["close"])
-                sl_dist = abs(st["entry"] - st["sl"])
-                pnl = st["richting"] * (ep - st["entry"]) / max(sl_dist, 1e-10) * st["risk_rem"]
+                pnl = st["richting"] * (ep - st["entry"]) / max(st["orig_sl_dist"], 1e-10) * st["risk_rem"]
                 kap += pnl
                 trs.append(self._make_tr(st["ot"], df.index[-1], st["richting"], st["entry"], ep,
                                          pnl, "OPEN", f"{sym}:{st['sig_type']}", st["sl"],
@@ -867,6 +1007,14 @@ class BacktestService:
         recent_sl_lookback = int(cfg.get("recent_sl_lookback", 4))
         recent_sl_block_signals = {str(s) for s in cfg.get("recent_sl_block_signals", ())}
         loss_day_filter = bool(cfg.get("loss_day_filter", False))
+        # Post-winstweek bescherming: na een grote winstweek → volgende week verlaagd risico
+        post_win_week_threshold = float(cfg.get("post_win_week_threshold", 0.0))
+        post_win_week_risk_scale = float(cfg.get("post_win_week_risk_scale", 1.0))
+        # Post-verliesweek bescherming: na een verliesweek → volgende week verlaagd risico
+        post_loss_week_threshold = float(cfg.get("post_loss_week_threshold", 0.0))  # negatief getal bijv. -0.015
+        post_loss_week_risk_scale = float(cfg.get("post_loss_week_risk_scale", 1.0))
+        # Vroege breakeven: SL naar entry als floating P&L >= breakeven_r × 1R (vóór TP1)
+        breakeven_r = float(cfg.get("breakeven_r", 0.75))
         # V20: maanddoel + 3-weken reset
         monthly_profit_target = float(cfg.get("monthly_profit_target", 0.0))  # 0 = uitgeschakeld
         reset_weeks = int(cfg.get("reset_weeks", 0))  # 0 = geen reset
@@ -889,6 +1037,7 @@ class BacktestService:
         risk_rem = 0.0
         tp1_hit = tp2_hit = False
         last_i = -999
+        _orig_sl_dist = 0.0  # originele SL-afstand bij opening — nooit overschrijven
         cum_equity = _banked_profit + kap
         _open_lot_size = 0.01
 
@@ -899,6 +1048,8 @@ class BacktestService:
         # Weekly & daily PnL tracking voor verliesbescherming
         _week_pnl: dict[int, float] = {}  # week_num → gerealiseerde PnL deze week
         _day_net_pnl: dict[date, float] = {}  # datum → netto PnL die dag
+        _prev_week_was_big_win: bool = False   # post-winstweek bescherming
+        _prev_week_was_loss: bool = False      # post-verliesweek bescherming
 
         for i in range(120, len(df)):
             b = df.iloc[i]
@@ -921,8 +1072,7 @@ class BacktestService:
             if reset_weeks > 0 and _next_reset_date is not None and bar_date >= _next_reset_date:
                 if ip:
                     ep = float(b["close"])
-                    sl_dist_r = abs(entry - sl)
-                    pnl_r = risk_rem * ((ep - entry) / max(sl_dist_r, 0.001) * richting)
+                    pnl_r = risk_rem * ((ep - entry) / max(_orig_sl_dist, 0.001) * richting)
                     kap += pnl_r
                     cum_equity = _banked_profit + kap
                     trs.append(
@@ -960,11 +1110,22 @@ class BacktestService:
                 _current_week = bar_week
                 _week_start_equity = kap
             elif bar_week != _current_week:
+                prev_week_ret = (kap - _week_start_equity) / max(_week_start_equity, 1)
                 if weekly_compound:
                     if kap > _week_start_equity:
                         _compound_multiplier = min(_compound_multiplier * compound_boost, 1.30)
                     else:
                         _compound_multiplier = max(_compound_multiplier * compound_decay, 1.0)
+                # Post-winstweek bescherming: grote winst → volgende week voorzichtiger
+                _prev_week_was_big_win = (
+                    post_win_week_threshold > 0
+                    and prev_week_ret >= post_win_week_threshold
+                )
+                # Post-verliesweek bescherming: verliesweek → volgende week voorzichtiger
+                _prev_week_was_loss = (
+                    post_loss_week_threshold != 0
+                    and prev_week_ret <= post_loss_week_threshold
+                )
                 _current_week = bar_week
                 _week_start_equity = kap
 
@@ -977,7 +1138,7 @@ class BacktestService:
             if ftmo_breached:
                 if ip:
                     ep = float(b["close"])
-                    pnl = richting * (ep - entry) / max(abs(entry - sl), 0.001) * risk_rem
+                    pnl = richting * (ep - entry) / max(_orig_sl_dist, 0.001) * risk_rem
                     kap += pnl
                     cum_equity = _banked_profit + kap
                     trs.append(
@@ -998,18 +1159,27 @@ class BacktestService:
                     ip = False
                     continue
 
+                # Vroege breakeven vóór TP1: als floating P&L >= breakeven_r × 1R → SL naar entry
+                if not tp1_hit and breakeven_r > 0:
+                    float_r = richting * (cl - entry) / _orig_sl_dist
+                    if float_r >= breakeven_r:
+                        if richting == 1 and sl < entry:
+                            sl = entry + 0.02 * _orig_sl_dist
+                        elif richting == -1 and sl > entry:
+                            sl = entry - 0.02 * _orig_sl_dist
+
                 # Break-even na TP1
                 if tp1_hit and not tp2_hit:
                     if richting == 1 and sl < entry:
-                        sl = entry + 0.05 * sl_dist
+                        sl = entry + 0.05 * _orig_sl_dist
                     elif richting == -1 and sl > entry:
-                        sl = entry - 0.05 * sl_dist
+                        sl = entry - 0.05 * _orig_sl_dist
 
                 # Trailing stop na TP1
                 if trail_on and tp1_hit:
-                    float_pnl = richting * (cl - entry) / sl_dist * risk_rem
+                    float_pnl = richting * (cl - entry) / _orig_sl_dist * risk_rem
                     if float_pnl > 500 and not tp2_hit:
-                        new_sl_trail = entry + richting * 0.4 * sl_dist
+                        new_sl_trail = entry + richting * 0.4 * _orig_sl_dist
                         if richting == 1:
                             sl = max(sl, new_sl_trail)
                         else:
@@ -1019,7 +1189,7 @@ class BacktestService:
                 if not tp1_hit:
                     if (richting == 1 and hi >= tp1) or (richting == -1 and lo <= tp1):
                         if not ((richting == 1 and lo <= sl) or (richting == -1 and hi >= sl)):
-                            pnl_tp1 = tp1_pct * risk_rem * ((tp1 - entry) / sl_dist * richting)
+                            pnl_tp1 = tp1_pct * risk_rem * ((tp1 - entry) / _orig_sl_dist * richting)
                             kap += pnl_tp1
                             if kap > piek:
                                 piek = kap
@@ -1050,7 +1220,7 @@ class BacktestService:
                 if tp1_hit and not tp2_hit:
                     tp2_frac = tp2_pct / (tp2_pct + tp3_pct)
                     if (richting == 1 and hi >= tp2) or (richting == -1 and lo <= tp2):
-                        pnl_tp2 = tp2_frac * risk_rem * ((tp2 - entry) / sl_dist * richting)
+                        pnl_tp2 = tp2_frac * risk_rem * ((tp2 - entry) / _orig_sl_dist * richting)
                         kap += pnl_tp2
                         if kap > piek:
                             piek = kap
@@ -1080,7 +1250,7 @@ class BacktestService:
                 # TP3
                 if tp1_hit and tp2_hit:
                     if (richting == 1 and hi >= tp3) or (richting == -1 and lo <= tp3):
-                        pnl_tp3 = risk_rem * ((tp3 - entry) / sl_dist * richting)
+                        pnl_tp3 = risk_rem * ((tp3 - entry) / _orig_sl_dist * richting)
                         kap += pnl_tp3
                         if kap > piek:
                             piek = kap
@@ -1110,7 +1280,7 @@ class BacktestService:
                 # SL check
                 hit_sl = (richting == 1 and lo <= sl) or (richting == -1 and hi >= sl)
                 if hit_sl:
-                    pnl_sl = risk_rem * ((sl - entry) / sl_dist * richting)
+                    pnl_sl = risk_rem * ((sl - entry) / _orig_sl_dist * richting)
                     if pnl_sl < 0:
                         rem_loss = max(0, ftmo_dag_eur - dag[bar_date]["loss"])
                         if abs(pnl_sl) > rem_loss:
@@ -1217,6 +1387,13 @@ class BacktestService:
                 if _day_pnl / max(kap, 1) >= daily_profit_lock_pct:
                     risk_pct *= daily_profit_lock_scale
 
+            # ── Post-winstweek bescherming ─────────────────────────
+            if _prev_week_was_big_win and post_win_week_risk_scale < 1.0:
+                risk_pct *= post_win_week_risk_scale
+            # ── Post-verliesweek bescherming ───────────────────────
+            if _prev_week_was_loss and post_loss_week_risk_scale < 1.0:
+                risk_pct *= post_loss_week_risk_scale
+
             richting = 1 if rich_str == "long" else -1
             cl_pr = float(b["close"])
 
@@ -1229,6 +1406,7 @@ class BacktestService:
             sl_dist = abs(cl_pr - sl)
             if sl_dist <= 0:
                 continue
+            _orig_sl_dist = sl_dist  # vast bij opening — nooit overschrijven
 
             risk_usd = kap * risk_pct * _compound_multiplier
             risk_rem = risk_usd
@@ -1252,8 +1430,7 @@ class BacktestService:
         # Sluit open positie
         if ip and len(df) > 0:
             ep = float(df.iloc[-1]["close"])
-            sl_dist = abs(entry - sl)
-            pnl = risk_rem * ((ep - entry) / max(sl_dist, 0.001) * richting)
+            pnl = risk_rem * ((ep - entry) / max(_orig_sl_dist, 0.001) * richting)
             kap += pnl
             cum_equity = _banked_profit + kap
             trs.append(

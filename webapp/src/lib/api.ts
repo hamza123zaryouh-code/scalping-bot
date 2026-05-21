@@ -53,6 +53,7 @@ export const api = {
 
   // Dashboard
   dashboard: () => request<{ data: import("./types").DashboardData }>("/api/v1/dashboard/live"),
+  commandCenter: () => request<{ data: import("./types").CommandCenterData }>("/api/v1/dashboard/command-center"),
   equityCurve: () => request<{ data: { points: import("./types").EquityPoint[]; starting_capital: number } }>("/api/v1/dashboard/equity-curve"),
   monthlyPnL: () => request<{ data: { months: import("./types").MonthlyPnL[] } }>("/api/v1/dashboard/monthly-pnl"),
   drawdownCurve: () => request<{ data: { points: import("./types").DrawdownPoint[] } }>("/api/v1/dashboard/drawdown-curve"),
@@ -110,4 +111,8 @@ export const api = {
 
   // Health
   health: () => request<{ status: string; version: string; env: string }>("/api/v1/health"),
+  recentLogs: (n = 50, level?: string) =>
+    request<{ data: { records: import("./types").LogEntry[]; total: number; last_seq: number } }>(
+      `/api/v1/logs/recent?n=${n}${level ? `&level=${encodeURIComponent(level)}` : ""}`,
+    ),
 };

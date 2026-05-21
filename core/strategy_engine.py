@@ -253,6 +253,425 @@ V22_CFG: dict = {
 }
 
 # ─────────────────────────────────────────────────────────────────
+# V23 PARAMETERS — Doel: €5k-10k/week | Max heat ≤ 4.8%
+# Hoge risk per trade + lagere ADX/slope drempels = meer signalen
+# Portfolio heat ≤ 4.8%: 2 × risk_a = 4.6% (binnen limiet)
+# ─────────────────────────────────────────────────────────────────
+
+V23_CFG: dict = {
+    **V22_CFG,
+    # ── Risico — 2× hoger dan V22, 2 concurrent trades past binnen 4.8% heat ──
+    "risk_a": 0.0230,   # EMA cross / MACD cross — 2.3% | 2×2.3=4.6% < 4.8%
+    "risk_b": 0.0180,   # BOS / Momentum — 1.8%
+    "risk_c": 0.0140,   # Pullback / MSS — 1.4%
+    # ── ADX drempels — lager voor meer geldig trends (was 18/18) ────
+    "adx_min": 13,
+    "h4adx_min": 13,
+    # ── EMA cross — lagere drempels voor meer entries ────────────
+    "ema_cross_min_adx": 13,
+    "ema_cross_min_h4_slope": 0.12,
+    "ema_cross_vol_ratio_min": 0.70,
+    "ema_cross_rsi_long_min": 47,
+    "ema_cross_rsi_long_max": 70,
+    "ema_cross_rsi_short_min": 30,
+    "ema_cross_rsi_short_max": 53,
+    "ema_cross_require_strong_regime": False,
+    # ── Pullback — ruimere RSI/dist vensters ─────────────────────
+    "pullback_min_adx": 13,
+    "pullback_min_h4_slope": 0.12,
+    "pullback_vol_ratio_min": 0.70,
+    "pullback_dist_long_min": -0.20,
+    "pullback_dist_long_max": 0.45,
+    "pullback_dist_short_min": -0.45,
+    "pullback_dist_short_max": 0.20,
+    "pullback_rsi_long_min": 48,
+    "pullback_rsi_long_max": 64,
+    "pullback_rsi_short_min": 36,
+    "pullback_rsi_short_max": 52,
+    # ── BOS / MSS — lagere ADX drempel ───────────────────────────
+    "bos_min_adx": 15,
+    "bos_min_h4_slope": 0.15,
+    # ── TP niveaus — zelfde als V22 maar TP3 groter ──────────────
+    "tp3_r": 8.0,
+    "tp1_pct": 0.20,    # minder vroeg sluiten → meer runners
+    "breakeven_r": 0.75,
+    # ── Kill zone boost — extra beloning voor premium sessies ─────
+    "kz_mult": 1.40,
+    # ── Trade frequentie ─────────────────────────────────────────
+    "max_dag": 7,
+    "sl_dag_max": 4,
+    "cooldown_h": 0.25,  # 15 min cooldown (was 30 min in V22)
+    "max_concurrent_positions": 2,
+    # ── Compound boost — sneller groeien na winstweek ─────────────
+    "compound_boost": 1.12,  # +12%/week na winstweek (was 10%)
+    "compound_decay": 0.82,  # compound verlagen na verliesweek
+    # ── Verliesweek-bescherming — iets soepeler voor meer kansen ──
+    "weekly_loss_threshold": 0.020,
+    "weekly_loss_risk_scale": 0.45,
+    "soft_weekly_loss_threshold": 0.008,
+    "soft_weekly_loss_risk_scale": 0.75,
+    "weekly_loss_block_signals": ("D_PULLBACK",),  # alleen D blokkeren
+    # ── Maanddoel behouden ────────────────────────────────────────
+    "monthly_profit_target": 40_000.0,
+    "monthly_min_target": 20_000.0,
+    "max_daily_loss_eur": 6_000.0,
+}
+
+# ─────────────────────────────────────────────────────────────────
+# V24 PARAMETERS — Doel: minder verliesweken | €5k-10k/week
+# Fixes t.o.v. V23:
+#   1. A_EMACROSS geblokkeerd in niet-sterke regimes (50% WR → verliesmaker)
+#   2. E_BOS hogere kwaliteitsdrempel (67% WR maar gemiddeld +€38/trade)
+#   3. Post-winstweek bescherming: na >2% week → 65% risk volgende week
+#   4. Snellere breakeven (0.45R i.p.v. 0.75R) om verliezers te beperken
+#   5. Na 2 opeenvolgende SLs: blokkeer A/D/E signalen
+# ─────────────────────────────────────────────────────────────────
+
+V24_CFG: dict = {
+    **V23_CFG,
+    # ── A_EMACROSS: alleen in STERK regime met hoge ADX ────────────
+    # V23 resultaat: 50% WR, -€2,266 totaal — kost meer dan het oplevert
+    "ema_cross_require_strong_regime": True,   # alleen STERK_BULL/STERK_BEAR
+    "ema_cross_min_adx": 26,                   # zeer hoge ADX eis (was 13)
+    "ema_cross_min_h4_slope": 0.30,            # sterke H4 slope vereist
+    # ── E_BOS: hogere kwaliteitsdrempel ───────────────────────────
+    # V23 resultaat: 15 trades voor +€570 totaal (+€38/trade) — niet efficiënt
+    "bos_min_adx": 22,                         # was 15 — hogere trendkracht
+    "bos_min_h4_slope": 0.22,                  # was 0.15 — sterkere structuur
+    # ── Snellere breakeven ─────────────────────────────────────────
+    # Verliesweken komen deels door trades die omslaan na een mooie start
+    "breakeven_r": 0.45,                       # was 0.75 — protect na 0.45R
+    # ── Na 2 opeenvolgende SLs: blokkeer zwakste signalen ──────────
+    "recent_sl_block_threshold": 2,
+    "recent_sl_lookback": 6,
+    "recent_sl_block_signals": ("A_EMACROSS", "D_PULLBACK", "E_BOS"),
+    # ── Post-winstweek bescherming ─────────────────────────────────
+    # 4 van de 9 verliesweken zijn ná een winstweek door markt-exhaustion
+    "post_win_week_threshold": 0.020,          # winstweek > +2% → volgende week beschermd
+    "post_win_week_risk_scale": 0.65,          # 65% risico de week erna
+    # ── H4 ADX licht verhoogd voor meer trendkwaliteit ─────────────
+    "h4adx_min": 15,                           # was 13
+    # ── TP1 kleiner sluit minder vroeg → meer runners naar TP2/TP3 ─
+    "tp1_pct": 0.15,                           # was 0.20 — minder sluiten bij TP1
+    # ── SL iets wijder om minder vroegtijdige stops te hebben ──────
+    "sl_atr": 1.7,                             # was 1.5
+    "sl_max": 2.3,
+}
+
+# ─────────────────────────────────────────────────────────────────
+# V25 PARAMETERS — Doel: meer winst + zo min mogelijk verliesweken
+# Fixes t.o.v. V24:
+#   1. E_BOS volledig uitgeschakeld (66.7% WR maar avg -€247/trade: verliezen > winsten)
+#   2. B_MACDCROSS meer risico (avg +€2,685/trade — beste signaal)
+#   3. C_MOMENTUM licht verhoogd (68.8% WR — betrouwbaarst)
+#   4. Post-verliesweek bescherming: na verliesweek → 65% risico
+#   5. Wekelijkse circuit breaker op -1.5% (was -2%)
+#   6. Strakkere SL (1.5 ATR) → kleinere individuele verliezen
+#   7. Snellere breakeven (0.35R) → meer bescherming van open winst
+#   8. Hogere TP2/TP3 targets → grotere winsten op sterke moves
+#   9. Na 1 SL al blokkeer zwakste signals (was 2)
+#  10. Hogere compound boost (+15%/week na winstweek)
+# ─────────────────────────────────────────────────────────────────
+
+V25_CFG: dict = {
+    **V24_CFG,
+    # ── Gerichte fixes op basis van V24 analyse ───────────────────────────────
+    #
+    # V24 verliesanalyse:
+    #   E_BOS:  9 trades, 66.7% WR maar avg -€247/trade (verliezen > winsten)
+    #           → mrt-23 week: 2 E_BOS trades met 0% WR = -€4,165
+    #   F_MSS:  9 trades, 66.7% WR, avg +€273/trade → OK, laten staan
+    #   B_MACD: 14 trades, 64.3% WR, avg +€2,685 → ster-signaal, meer risico
+    #   C_MOM:  16 trades, 68.8% WR, avg +€230 → betrouwbaar, licht verhoogd
+    #
+    # Principe: minimale wijzigingen — alleen fixen wat aantoonbaar slecht is
+
+    # ── Gerichte fixes op basis van V24 analyse ───────────────────────────────
+    #
+    # V24 verliesanalyse:
+    #   E_BOS:  9 trades, 66.7% WR maar avg -€247/trade — verliezen > winsten
+    #           In V24 verantwoordelijk voor mrt-23 week (-€4,165, 0% WR)
+    #   Probleem: E_BOS volledig uitschakelen (999) veroorzaakte side-effect:
+    #             C_MOMENTUM en F_MSS namen de vrijgekomen cooldown-slots over,
+    #             waardoor dec-01 week 3 trades had (was 1) met 33% WR = -€2,554
+    #
+    # Oplossing: E_BOS behouden maar alleen in ZEER sterke trends (ADX>=30)
+    # Dit geeft 1-3 E_BOS trades (was 9) in ideale condities, behoud cooldown-gedrag
+
+    # ── V25: multi-engine fixes — alle beschermingen nu ook in single-symbol engine ─
+    #
+    # Nieuw in V25 (nu werkend in beide engines):
+    #   1. B_MACDCROSS: 2.0% risico (was 1.8%) → ster-signaal 64% WR avg +€2,685/trade
+    #   2. Post-verliesweek: na verliesweek > -1.5% → 72% risico volgende week
+    #   3. Post-winstweek: na winstweek > +2% → 65% risico (al in V24, nu ook single-engine)
+    #   4. Vroege breakeven: SL naar entry bij 0.45R vóór TP1 (nu ook single-engine)
+    #   5. Wekelijkse verliesbeperking: bij -1.0% wekelijks → 30% risico (was 2.0% → 45%)
+    #   6. Zachte wekelijkse beperking: bij -0.5% → 65% risico (was 0.8% → 75%)
+    #   7. Configureerbare SL-blokkering: na 2 SLs blokkeer A/D/E (nu ook single-engine)
+
+    # ── 1. B_MACDCROSS licht meer risico ──────────────────────────────────────
+    "risk_b": 0.0200,                          # was 0.018 → 2.0%
+
+    # ── 2+3. Post-win/verliesweek bescherming ─────────────────────────────────
+    "post_loss_week_threshold": -0.015,        # verliesweek > -1.5% → protect
+    "post_loss_week_risk_scale": 0.72,         # 72% risico de week erna
+    "post_win_week_threshold": 0.020,          # winstweek > +2% → protect (ongewijzigd)
+    "post_win_week_risk_scale": 0.65,          # 65% risico (ongewijzigd)
+
+    # ── Wekelijkse scaling ONGEWIJZIGD t.o.v. V24 ────────────────────────────
+    # Tighter scaling schaalt ook winnende trades neer → behoud V24 waarden
+    # bos_min_adx=22, bos_min_h4_slope=0.22, breakeven_r=0.45, sl_atr=1.7
+    # tp1_pct=0.15, tp2_r=3.5, tp3_r=8.0, compound_boost=1.12, compound_decay=0.82
+    # weekly_loss_threshold=0.020, weekly_loss_risk_scale=0.45 (V23 inherited, ongewijzigd)
+    # recent_sl_block_threshold=2, recent_sl_block_signals=(A/D/E)
+}
+
+# ─────────────────────────────────────────────────────────────────
+# V26 PARAMETERS — Doel: consistente €1-4k/week | bugfix + echte R:R
+# Fixes t.o.v. V25:
+#   1. Alleen C_MOMENTUM + B_MACDCROSS (E_BOS/F_MSS/A/D uitgeschakeld)
+#   2. tp1_pct=0.45 zodat TP1-hit wins > losses worden
+#   3. breakeven_r=1.5 — meer ruimte voor trade vóór breakeven
+#   4. TP2=2.5R (was 3.5R) — haalbaarder target
+#   5. B_MACDCROSS: H4-slope + ADX filter toegevoegd
+#   6. P&L bug gefixed: orig_sl_dist in backtest_service
+# ─────────────────────────────────────────────────────────────────
+
+V26_CFG: dict = {
+    **V25_CFG,
+    # ── Alleen C_MOMENTUM (enige consistent winstgevende signaal) ──
+    # C_MOMENTUM: 72% WR, +492/trade — enige signal dat werkt
+    # B_MACDCROSS: 55% WR, -664/trade → uitgeschakeld
+    # E_BOS/F_MSS/A/D: al eerder bewezen verliezend
+    "disabled_signals": ["A_EMACROSS", "B_MACDCROSS", "D_PULLBACK", "E_BOS", "F_MSS"],
+    # ── C_MOMENTUM: alleen STERK_BULL/BEAR (BULL geeft te veel slechte trades) ─
+    "c_momentum_allow_bull": False,
+    "c_momentum_min_adx": 20,
+    # ── ADX filters ────────────────────────────────────────────────
+    "adx_min": 18,
+    "h4adx_min": 18,
+    # ── TP structuur: grotere wins zodat win/loss ratio > 0.5 ──────
+    "tp1_pct": 0.45,    # 45% bij TP1 — zelfde als eerste succesvolle V26 run
+    "tp2_pct": 0.35,    # 35% bij TP2, 20% runner
+    "tp1_r": 1.5,
+    "tp2_r": 2.5,       # haalbaarder dan 3.5R
+    "tp3_r": 5.0,       # haalbaarder dan 8.0R
+    # ── Breakeven na 1.5R — zelfde als eerste succesvolle V26 run ──
+    "breakeven_r": 1.5,
+    # ── Risk: 1.8% per trade ──────────────────────────────────────
+    "risk_b": 0.0180,   # C_MOMENTUM — 1.8% per trade
+    # ── Verliesweek bescherming ────────────────────────────────────
+    "weekly_loss_threshold": 0.012,
+    "weekly_loss_risk_scale": 0.40,
+    "soft_weekly_loss_threshold": 0.006,
+    "soft_weekly_loss_risk_scale": 0.70,
+    "weekly_loss_block_signals": (),
+    "sl_dag_max": 2,
+    # ── Compound: gematigd ────────────────────────────────────────
+    "compound_boost": 1.08,
+    "compound_decay": 0.92,
+}
+
+# ─────────────────────────────────────────────────────────────────
+# V27 PARAMETERS — Doel: €10-20k/maand | Weinig verliesweken
+# Basis: V26 (alleen C_MOMENTUM, bewezen 72% WR)
+# Wijzigingen t.o.v. V26:
+#   1. max_dag: 6 → 8 (meer kansen per dag)
+#   2. cooldown_h: 2 → 1 (sneller opnieuw instappen)
+#   3. risk_b: 1.8% → 2.0% (iets hoger per trade)
+#   4. max_concurrent_positions: 1 → 2 (2 posities tegelijk)
+#   5. breakeven_r: 1.5 → 1.2 (winsten sneller beschermen)
+#   6. monthly_profit_target: 8k → 15k
+# ─────────────────────────────────────────────────────────────────
+
+V27_CFG: dict = {
+    **V26_CFG,
+    # ── Meer trades per dag ────────────────────────────────────────
+    "max_dag": 8,
+    "sl_dag_max": 3,
+    "cooldown_h": 1,
+    # ── Iets hogere risk voor €10-20k/maand doel ──────────────────
+    "risk_b": 0.0200,
+    # ── 2 posities tegelijk ────────────────────────────────────────
+    "max_concurrent_positions": 2,
+    # ── Snellere breakeven — winsten beter beschermen ──────────────
+    "breakeven_r": 1.2,
+    # ── C_MOMENTUM: ook BULL regime toestaan, maar strikter ADX ───
+    # V26: alleen STERK_BULL = 19 trades/6mnd — te weinig
+    # V27: ook BULL, maar min_adx 20→22 om kwaliteit te bewaren
+    "c_momentum_allow_bull": True,
+    "c_momentum_min_adx": 22,
+    # ── Maanddoel ─────────────────────────────────────────────────
+    "monthly_profit_target": 15_000.0,
+    "monthly_min_target": 8_000.0,
+    # ── Verliesweek bescherming: ongewijzigd sterk ─────────────────
+    "soft_weekly_loss_threshold": 0.006,   # -0.6% → 70% risk
+    "soft_weekly_loss_risk_scale": 0.70,
+    "weekly_loss_threshold": 0.012,        # -1.2% → 40% risk
+    "weekly_loss_risk_scale": 0.40,
+    "weekly_stop_threshold": 0.018,        # -1.8% → volledig stoppen
+}
+
+# ─────────────────────────────────────────────────────────────────
+# EXPERT_CFG — Trend-following intraday | kwaliteit boven frequentie
+# Basis: V27, maar zonder scalp-logica en met strengere kwaliteitsfilters
+# Doel: robuuste live-handel met harde risico- en verliesweekbescherming
+# ─────────────────────────────────────────────────────────────────
+
+EXPERT_CFG: dict = {
+    **V27_CFG,
+    "disabled_signals": ["E_BOS"],
+    "risk_a": 0.0150,
+    "risk_b": 0.0130,
+    "risk_c": 0.0090,
+    "adx_min": 17,
+    "h4adx_min": 18,
+    "b_macd_min_adx": 20,
+    "b_macd_min_h4_slope": 0.22,
+    "b_macd_require_strong": True,
+    "ema_cross_risk_scale": 0.85,
+    "ema_cross_min_adx": 20,
+    "ema_cross_min_h4_slope": 0.30,
+    "ema_cross_vol_ratio_min": 0.95,
+    "ema_cross_require_strong_regime": True,
+    "pullback_min_adx": 20,
+    "pullback_min_h4_slope": 0.40,
+    "pullback_vol_ratio_min": 0.95,
+    "pullback_risk_scale": 0.80,
+    "c_momentum_allow_bull": True,
+    "c_momentum_min_adx": 24,
+    "tp1_r": 1.5,
+    "tp2_r": 3.0,
+    "tp3_r": 6.0,
+    "tp1_pct": 0.25,
+    "tp2_pct": 0.35,
+    "sl_atr": 1.6,
+    "sl_max": 2.2,
+    "max_dag": 6,
+    "sl_dag_max": 2,
+    "cooldown_h": 1.5,
+    "breakeven_r": 0.9,
+    "kz_mult": 1.20,
+    "compound_boost": 1.06,
+    "compound_decay": 0.88,
+    "max_concurrent_positions": 2,
+    "soft_weekly_loss_threshold": 0.005,
+    "soft_weekly_loss_risk_scale": 0.65,
+    "weekly_loss_threshold": 0.010,
+    "weekly_loss_risk_scale": 0.35,
+    "weekly_stop_threshold": 0.015,
+    "daily_profit_lock_pct": 0.020,
+    "daily_profit_lock_scale": 0.45,
+    "max_daily_loss_eur": 4_000.0,
+    "monthly_profit_target": 20_000.0,
+    "monthly_stretch_target": 30_000.0,
+    "monthly_min_target": 12_000.0,
+}
+
+# ─────────────────────────────────────────────────────────────────
+# SCALP_CFG — Hogere frequentie op M15 | meerdere signalen per dag
+# Gebruikt dezelfde A-F signalen, maar met soepelere filters en kleinere risk
+# per trade zodat de strategie meer kansen pakt zonder blind agressief te zijn.
+# ─────────────────────────────────────────────────────────────────
+
+SCALP_CFG: dict = {
+    **V27_CFG,
+    # Winnende scalp-variant op MT5 M15 backtest:
+    # focus op B_MACDCROSS + D_PULLBACK, de rest uitgezet.
+    "disabled_signals": ["A_EMACROSS", "C_MOMENTUM", "E_BOS", "F_MSS"],
+    "risk_a": 0.0045,
+    "risk_b": 0.0045,
+    "risk_c": 0.0040,
+    "adx_min": 11,
+    "h4adx_min": 10,
+    "b_macd_min_adx": 13,
+    "b_macd_min_h4_slope": 0.05,
+    "b_macd_require_strong": False,
+    "ema_cross_risk_scale": 1.0,
+    "ema_cross_min_adx": 12,
+    "ema_cross_min_h4_slope": 0.08,
+    "ema_cross_vol_ratio_min": 0.70,
+    "ema_cross_rsi_long_min": 46,
+    "ema_cross_rsi_long_max": 72,
+    "ema_cross_rsi_short_min": 28,
+    "ema_cross_rsi_short_max": 54,
+    "ema_cross_require_strong_regime": False,
+    "pullback_dist_long_min": -0.25,
+    "pullback_dist_long_max": 0.45,
+    "pullback_dist_short_min": -0.45,
+    "pullback_dist_short_max": 0.25,
+    "pullback_rsi_long_min": 47,
+    "pullback_rsi_long_max": 64,
+    "pullback_rsi_short_min": 36,
+    "pullback_rsi_short_max": 53,
+    "pullback_min_adx": 12,
+    "pullback_min_h4_slope": 0.06,
+    "pullback_vol_ratio_min": 0.65,
+    "pullback_risk_scale": 0.95,
+    "c_momentum_allow_bull": True,
+    "c_momentum_min_adx": 16,
+    "bos_min_adx": 13,
+    "bos_min_h4_slope": 0.08,
+    "tp1_r": 1.0,
+    "tp2_r": 2.0,
+    "tp3_r": 3.0,
+    "tp1_pct": 0.55,
+    "tp2_pct": 0.25,
+    "sl_atr": 0.85,
+    "sl_max": 1.20,
+    "max_dag": 24,
+    "sl_dag_max": 5,
+    "cooldown_h": 0.05,
+    "breakeven_r": 0.30,
+    "kz_mult": 1.15,
+    "compound_boost": 1.03,
+    "compound_decay": 0.94,
+    "max_concurrent_positions": 3,
+    "soft_weekly_loss_threshold": 0.0035,
+    "soft_weekly_loss_risk_scale": 0.55,
+    "weekly_loss_threshold": 0.0075,
+    "weekly_loss_risk_scale": 0.30,
+    "weekly_stop_threshold": 0.012,
+    "daily_profit_lock_pct": 0.015,
+    "daily_profit_lock_scale": 0.40,
+    "max_daily_loss_eur": 2_500.0,
+    "monthly_profit_target": 12_000.0,
+    "monthly_stretch_target": 20_000.0,
+    "monthly_min_target": 6_000.0,
+}
+
+# ─────────────────────────────────────────────────────────────────
+# AGGRESSIVE_FTMO_CFG — High-activity scalp mode
+# Meer trades en meer risico per dag. Bedoeld als experimentele modus
+# voor hogere output, maar aantoonbaar minder robuust dan SCALP_CFG.
+# ─────────────────────────────────────────────────────────────────
+
+AGGRESSIVE_FTMO_CFG: dict = {
+    **SCALP_CFG,
+    "b_macd_min_adx": 11,
+    "b_macd_min_h4_slope": 0.03,
+    "pullback_min_adx": 10,
+    "pullback_min_h4_slope": 0.05,
+    "pullback_vol_ratio_min": 0.60,
+    "risk_a": 0.0050,
+    "risk_b": 0.0055,
+    "risk_c": 0.0050,
+    "tp2_r": 1.8,
+    "tp3_r": 2.8,
+    "tp1_pct": 0.60,
+    "sl_atr": 0.85,
+    "sl_max": 1.20,
+    "breakeven_r": 0.25,
+    "max_dag": 30,
+    "sl_dag_max": 8,
+    "cooldown_h": 0.10,
+    "max_daily_loss_eur": 3_500.0,
+    "monthly_profit_target": 20_000.0,
+    "monthly_stretch_target": 30_000.0,
+    "monthly_min_target": 10_000.0,
+}
+
+# ─────────────────────────────────────────────────────────────────
 # MULTI-PAAR CONTRACT SPECS (gedeeld door backtest + live bot)
 # lot_factor: P&L per lot per 1 prijseenheid (USD)
 # price_ref: referentieprijs voor H4-slope normalisatie t.o.v. XAUUSD
@@ -466,7 +885,6 @@ class StrategyEngine:
         d["ema200"] = _ema(d["close"], 200)
         d["rsi14"] = _rsi(d["close"], 14)
         d["atr14"] = _atr(d["high"], d["low"], d["close"], 14)
-        d["atr_ma"] = d["atr14"].rolling(20).mean()
         d["adx14"] = _adx(d["high"], d["low"], d["close"], 14)
 
         _, _, hist = _macd(d["close"])
@@ -696,6 +1114,10 @@ class StrategyEngine:
         ema_cross_require_strong_regime = bool(params.get("ema_cross_require_strong_regime", False))
         bos_min_adx = _safe(params.get("bos_min_adx", 24), 24)
         bos_min_h4_slope = _safe(params.get("bos_min_h4_slope", 0.45), 0.45)
+        disabled_signals: set[str] = set(params.get("disabled_signals", []))
+        b_macd_min_adx = _safe(params.get("b_macd_min_adx", adx_min), adx_min)
+        b_macd_min_h4_slope = _safe(params.get("b_macd_min_h4_slope", 0.0), 0.0)
+        b_macd_require_strong = bool(params.get("b_macd_require_strong", False))
 
         # ── Globale filters ──────────────────────────────────────
         if h4adx < h4a_min:
@@ -715,6 +1137,8 @@ class StrategyEngine:
         sent_mult_short = 1.15 if sentiment_label in ("sterk_bearish", "bearish") else 1.0
 
         sigs: list[tuple] = []
+        _mom_allow_bull = bool(params.get("c_momentum_allow_bull", False))
+        _mom_min_adx = _safe(params.get("c_momentum_min_adx", 20), 20)
 
         # ── LONG signalen ────────────────────────────────────────
         bull_ok = (
@@ -728,7 +1152,7 @@ class StrategyEngine:
         if bull_ok:
             rsi_lo, rsi_hi = 47, 72
 
-            if (
+            if "A_EMACROSS" not in disabled_signals and (
                 ema_xup
                 and macdh > -0.5
                 and ema_cross_rsi_long_min <= rsi14 <= ema_cross_rsi_long_max
@@ -740,23 +1164,30 @@ class StrategyEngine:
             ):
                 sigs.append(("long", "A_EMACROSS", risk_a * ema_cross_risk_scale * sent_mult_long, tp1r, tp2r, tp3r))
 
-            if macd_xu and e9 > e21 and rsi_lo <= rsi14 <= rsi_hi - 3 and h4sl > 0:
+            if "B_MACDCROSS" not in disabled_signals and (
+                macd_xu and e9 > e21
+                and rsi_lo <= rsi14 <= rsi_hi - 3
+                and h4sl >= b_macd_min_h4_slope
+                and adx >= b_macd_min_adx
+                and (not b_macd_require_strong or h4reg in ("STERK_BULL",))
+            ):
                 sigs.append(("long", "B_MACDCROSS", risk_b * sent_mult_long, tp1r, tp2r, tp3r))
 
-            # C_MOMENTUM: alleen STERK_BULL + hogere ADX + sterkere momentum
-            if (
+            # C_MOMENTUM: STERK_BULL (+ optioneel BULL) + hogere ADX + sterkere momentum
+            _mom_regimes = ("STERK_BULL", "BULL") if _mom_allow_bull else ("STERK_BULL",)
+            if "C_MOMENTUM" not in disabled_signals and (
                 e9 > e21 > e50
                 and 50 <= rsi14 <= 65
                 and macdh > 0.5
                 and h4sl > 0.3
                 and rsi_rec
-                and h4reg == "STERK_BULL"
-                and adx > 20
+                and h4reg in _mom_regimes
+                and adx > _mom_min_adx
             ):
                 sigs.append(("long", "C_MOMENTUM", risk_b * sent_mult_long, tp1r, tp2r, tp3r))
 
             # D_PULLBACK: schonere pullback range (dichter bij EMA21)
-            if (
+            if "D_PULLBACK" not in disabled_signals and (
                 h4reg == "STERK_BULL"
                 and pullback_dist_long_min <= dist21 <= pullback_dist_long_max
                 and cl > e21
@@ -771,7 +1202,7 @@ class StrategyEngine:
                 sigs.append(("long", "D_PULLBACK", risk_c * pullback_risk_scale * sent_mult_long, tp1r, tp2r, tp3r))
 
             # E_BOS: risk_c (was risk_b) + strengere ADX-filter
-            if (
+            if "E_BOS" not in disabled_signals and (
                 bos_b
                 and cl > e21
                 and 53 <= rsi14 <= 68
@@ -781,7 +1212,7 @@ class StrategyEngine:
             ):
                 sigs.append(("long", "E_BOS", risk_c * sent_mult_long, tp1r * 0.9, tp2r, tp3r * 0.9))
 
-            if mss_b and 50 <= rsi14 <= 65 and cl > e21 and h4reg in ("STERK_BULL", "BULL") and h4sl > 0:
+            if "F_MSS" not in disabled_signals and mss_b and 50 <= rsi14 <= 65 and cl > e21 and h4reg in ("STERK_BULL", "BULL") and h4sl > 0:
                 sigs.append(("long", "F_MSS", risk_c * sent_mult_long, tp1r, tp2r, tp3r))
 
         # ── SHORT signalen ───────────────────────────────────────
@@ -796,7 +1227,7 @@ class StrategyEngine:
         if bear_ok:
             rsi_lo, rsi_hi = 28, 53
 
-            if (
+            if "A_EMACROSS" not in disabled_signals and (
                 ema_xdn
                 and macdh < 0.5
                 and ema_cross_rsi_short_min <= rsi14 <= ema_cross_rsi_short_max
@@ -808,22 +1239,29 @@ class StrategyEngine:
             ):
                 sigs.append(("short", "A_EMACROSS", risk_a * ema_cross_risk_scale * sent_mult_short, tp1r, tp2r, tp3r))
 
-            if macd_xd and e9 < e21 and rsi_lo + 3 <= rsi14 <= rsi_hi and h4sl < 0:
+            if "B_MACDCROSS" not in disabled_signals and (
+                macd_xd and e9 < e21
+                and rsi_lo + 3 <= rsi14 <= rsi_hi
+                and h4sl <= -b_macd_min_h4_slope
+                and adx >= b_macd_min_adx
+                and (not b_macd_require_strong or h4reg in ("STERK_BEAR",))
+            ):
                 sigs.append(("short", "B_MACDCROSS", risk_b * sent_mult_short, tp1r, tp2r, tp3r))
 
-            # C_MOMENTUM: alleen STERK_BEAR + hogere ADX + sterkere neerwaartse momentum
-            if (
+            # C_MOMENTUM: STERK_BEAR (+ optioneel BEAR) + hogere ADX + sterkere neerwaartse momentum
+            _mom_regimes_s = ("STERK_BEAR", "BEAR") if _mom_allow_bull else ("STERK_BEAR",)
+            if "C_MOMENTUM" not in disabled_signals and (
                 e9 < e21 < e50
                 and 35 <= rsi14 <= rsi_hi
                 and macdh < -0.5
                 and h4sl < -0.3
-                and h4reg == "STERK_BEAR"
-                and adx > 20
+                and h4reg in _mom_regimes_s
+                and adx > _mom_min_adx
             ):
                 sigs.append(("short", "C_MOMENTUM", risk_b * sent_mult_short, tp1r, tp2r, tp3r))
 
             # D_PULLBACK: schonere pullback range (dichter bij EMA21)
-            if (
+            if "D_PULLBACK" not in disabled_signals and (
                 h4reg == "STERK_BEAR"
                 and pullback_dist_short_min <= dist21 <= pullback_dist_short_max
                 and cl < e21
@@ -838,7 +1276,7 @@ class StrategyEngine:
                 sigs.append(("short", "D_PULLBACK", risk_c * pullback_risk_scale * sent_mult_short, tp1r, tp2r, tp3r))
 
             # E_BOS: risk_c (was risk_b) + strengere ADX-filter
-            if (
+            if "E_BOS" not in disabled_signals and (
                 bos_be
                 and cl < e21
                 and rsi_lo <= rsi14 <= rsi_hi - 2
@@ -848,7 +1286,7 @@ class StrategyEngine:
             ):
                 sigs.append(("short", "E_BOS", risk_c * sent_mult_short, tp1r * 0.9, tp2r, tp3r * 0.9))
 
-            if mss_be and 35 <= rsi14 <= rsi_hi and cl < e21 and h4reg in ("STERK_BEAR", "BEAR") and h4sl < 0:
+            if "F_MSS" not in disabled_signals and mss_be and 35 <= rsi14 <= rsi_hi and cl < e21 and h4reg in ("STERK_BEAR", "BEAR") and h4sl < 0:
                 sigs.append(("short", "F_MSS", risk_c * sent_mult_short, tp1r, tp2r, tp3r))
 
         if not sigs:
@@ -876,9 +1314,9 @@ class StrategyEngine:
             atr_sl = cl + sl_atr_m * h4_atr * 0.25
             sl_raw = min(swing_sl, atr_sl)
             sl_dist = sl_raw - cl
-
         min_sl = 0.5 * atr14
         max_sl = sl_max_m * atr14 * 4
+
         sl_dist = max(min_sl, min(max_sl, sl_dist))
 
         d = 1 if direction == "long" else -1

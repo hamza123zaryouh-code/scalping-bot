@@ -99,6 +99,50 @@ class DataExecutionLayer:
         frame.index = idx.tz_convert(None) if idx.tz is not None else idx
         return frame.loc[:, ["open", "high", "low", "close", "volume", "spread"]].sort_index()
 
+    def fetch_candles_for_timeframe(
+        self, symbol: str, timeframe: str, bars: int = 60
+    ) -> pd.DataFrame:
+        """Haalt candles op voor een specifiek tijdsframe (bijv. M15 voor entry-bevestiging)."""
+        sym = symbol.upper()
+        if mt5 is not None and self.connected:
+            tf = self._resolve_mt5_timeframe(timeframe)
+            if not mt5.symbol_select(sym, True):
+                logger.warning("MT5: symbol_select(%s) mislukt", sym)
+            rates = mt5.copy_rates_from_pos(sym, tf, 0, bars)
+            if rates is None:
+                return pd.DataFrame()
+            frame = pd.DataFrame(rates)
+            if frame.empty:
+                return frame
+            frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True).dt.tz_convert(None)
+            return (
+                frame.rename(columns={"tick_volume": "volume"})
+                .assign(spread=lambda data: data.get("spread", 0.0))
+                .loc[:, ["time", "open", "high", "low", "close", "volume", "spread"]]
+                .set_index("time")
+                .sort_index()
+            )
+
+        interval = self._resolve_yfinance_interval(timeframe)
+        ticker = self._resolve_yfinance_symbol(sym)
+        period = self._resolve_yfinance_period(timeframe)
+        try:
+            frame = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False)
+        except Exception as exc:
+            logger.debug("M15 yfinance download mislukt voor %s: %s", sym, exc)
+            return pd.DataFrame()
+        if frame.empty:
+            return pd.DataFrame()
+        if isinstance(frame.columns, pd.MultiIndex):
+            frame.columns = frame.columns.get_level_values(0)
+        frame = frame.rename(columns=str.lower)
+        if "volume" not in frame.columns:
+            frame["volume"] = 0.0
+        frame["spread"] = 0.0
+        idx = pd.to_datetime(frame.index)
+        frame.index = idx.tz_convert(None) if idx.tz is not None else idx
+        return frame.loc[:, ["open", "high", "low", "close", "volume", "spread"]].sort_index().tail(bars)
+
     def account_status(self) -> dict[str, Any]:
         if self.settings.mode == "paper" or mt5 is None or not self.connected:
             positions = [

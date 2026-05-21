@@ -10,9 +10,12 @@ interface AppShellProps {
 
 export function AppShell({ children, mode, lastUpdate }: AppShellProps) {
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: "var(--bg-primary)" }}>
+    <div className="app-shell" style={{ display: "flex", minHeight: "100vh", background: "var(--bg-primary)" }}>
       <Sidebar />
-      <div style={{ flex: 1, marginLeft: 220, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
+      <div
+        className="app-shell-content"
+        style={{ flex: 1, marginLeft: 220, display: "flex", flexDirection: "column", minHeight: "100vh" }}
+      >
         <TopBar mode={mode} lastUpdate={lastUpdate} />
         <main style={{ flex: 1, padding: "24px", overflow: "auto" }}>
           {children}

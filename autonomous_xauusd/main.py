@@ -406,6 +406,32 @@ class AutonomousTradingSystem:
                 )
             self.telegram.notify(self._format_trade_close_message(closed_trade))
 
+    def _compute_drawdown_scale(self) -> float:
+        """
+        Schaalt risico omlaag naarmate drawdown de FTMO-limiet nadert.
+          DD < 2%  → 1.00  (geen aanpassing)
+          DD 2–4%  → 0.75
+          DD 4–5%  → 0.50
+          DD > 5%  → 0.30
+        Gebaseerd op FTMO_START_CAPITAL; werkt onafhankelijk van circuit breaker.
+        """
+        try:
+            ftmo = self._ftmo_guard.get_status_dict()
+            total_dd = float(ftmo.get("total_drawdown", 0.0))
+            start_cap = self.settings.ftmo_start_capital
+            if start_cap <= 0:
+                return 1.0
+            dd_pct = total_dd / start_cap
+            if dd_pct >= 0.05:
+                return 0.30
+            if dd_pct >= 0.04:
+                return 0.50
+            if dd_pct >= 0.02:
+                return 0.75
+            return 1.0
+        except Exception:
+            return 1.0
+
     def _open_trade(
         self,
         sym: str,
@@ -416,15 +442,21 @@ class AutonomousTradingSystem:
         session_info,
         sig_type: str,
         h4_regime: str,
+        portfolio_scale: float = 1.0,
     ) -> None:
         """Voer een goedgekeurd signaal uit en log alle lagen."""
         risk_mult = self.circuit_breaker.get_risk_multiplier()
         kelly_mult = self._compute_kelly_multiplier(sig_type)
-        # Combineer circuit breaker + Kelly multiplier; Kelly kan risico verhogen (max 1.3) of verlagen (min 0.5)
-        final_risk_mult = round(float(np.clip(risk_mult * kelly_mult, 0.0, 1.3)), 3)
+        dd_scale = self._compute_drawdown_scale()
+        # Combineer: circuit breaker × Kelly × drawdown-scaling × portfolio (correlatie)
+        # Kelly kan verhogen tot 1.3; dd_scale en portfolio_scale kunnen alleen verlagen.
+        combined = risk_mult * kelly_mult * dd_scale * portfolio_scale
+        final_risk_mult = round(float(np.clip(combined, 0.0, 1.3)), 3)
         logger.info(
-            "Trade openen: %s %s %s | risk_mult=%.0f%% kelly_mult=%.0f%% final=%.0f%%",
-            signal.side, sig_type, sym, risk_mult * 100, kelly_mult * 100, final_risk_mult * 100,
+            "Trade openen: %s %s %s | cb=%.0f%% kelly=%.0f%% dd=%.0f%% port=%.0f%% → final=%.0f%%",
+            signal.side, sig_type, sym,
+            risk_mult * 100, kelly_mult * 100, dd_scale * 100,
+            portfolio_scale * 100, final_risk_mult * 100,
         )
         execution = self.engine.execute_trade(
             signal, self.parameters,
@@ -478,6 +510,27 @@ class AutonomousTradingSystem:
             logger.info("[WAIT: no_signal] %s — %s", sym, reason)
         except Exception:
             logger.info("[WAIT: no_signal] %s — indicatoren konden niet worden geanalyseerd", sym)
+
+    def _m15_confirms_signal(self, sym: str, side: str) -> bool:
+        """
+        Checkt of M15 EMA9 > EMA21 (long) of EMA9 < EMA21 (short) op de laatste gesloten bar.
+        Bij data-fouten (MT5 niet beschikbaar, te weinig bars): altijd True (geen false negatives).
+        """
+        try:
+            m15 = self.engine.fetch_candles_for_timeframe(sym, "M15", bars=30)
+            if m15.empty or len(m15) < 22:
+                return True
+            close = m15["close"]
+            ema9 = close.ewm(span=9, adjust=False).mean()
+            ema21 = close.ewm(span=21, adjust=False).mean()
+            last_ema9 = float(ema9.iloc[-2])
+            last_ema21 = float(ema21.iloc[-2])
+            if side == "buy":
+                return last_ema9 > last_ema21
+            return last_ema9 < last_ema21
+        except Exception as exc:
+            logger.debug("M15 bevestiging kon niet worden berekend voor %s: %s", sym, exc)
+            return True
 
     def _run_symbol_cycle(
         self,
@@ -556,8 +609,20 @@ class AutonomousTradingSystem:
             )
             return
 
-        # Correlation filter: EURUSD en GBPUSD zijn sterk gecorreleerde USD-pairs.
-        # Blokkeer een nieuwe positie als er al max_correlated_positions in dezelfde richting open zijn.
+        # M15 entry-bevestiging: EMA9 vs EMA21 op M15 moet richting bevestigen.
+        # Vermindert SL-afstand door alleen entries te nemen met momentum-alignment op lagere TF.
+        if not self._m15_confirms_signal(sym, signal.side):
+            logger.info(
+                "[WAIT: m15_no_confirm] %s %s — M15 EMA niet aligned met %s richting",
+                sym, sig_type, signal.side,
+            )
+            return
+
+        # Correlation filter: EURUSD en GBPUSD zijn sterk gecorreleerde USD-pairs (~85%).
+        # Als er al een gecorreleerde positie in dezelfde richting open is:
+        #   - 1 gecorreleerde positie → risico halveren (0.5×) i.p.v. blokkeren
+        #   - ≥ max_correlated_positions+1 → volledig blokkeren
+        portfolio_scale = 1.0
         if sym in _CORRELATED_GROUP and self.settings.max_correlated_positions > 0:
             same_dir_count = sum(
                 1
@@ -566,19 +631,28 @@ class AutonomousTradingSystem:
                 for trade in self.memory.list_open_trades(other_sym)
                 if trade.get("side") == signal.side
             )
-            if same_dir_count >= self.settings.max_correlated_positions:
+            if same_dir_count >= self.settings.max_correlated_positions + 1:
                 logger.info(
                     "[WAIT: correlation_filter] %s %s geblokkeerd — %d gecorreleerde %s positie(s) al open",
                     sym, signal.side, same_dir_count, signal.side,
                 )
                 return
+            if same_dir_count >= self.settings.max_correlated_positions:
+                portfolio_scale = 0.5
+                logger.info(
+                    "[CORR: risk_halved] %s %s — gecorreleerde positie open, risico gehalveerd (0.5×)",
+                    sym, signal.side,
+                )
 
         allowed, gate_reason = self._can_open_trade(account, sym)
         if not allowed:
             logger.info("[WAIT: risk_gate] %s — %s %s %s", gate_reason, signal.side, sig_type, sym)
             return
 
-        self._open_trade(sym, signal, account, current_sentiment, sentiment_result, session_info, sig_type, h4_regime)
+        self._open_trade(
+            sym, signal, account, current_sentiment, sentiment_result,
+            session_info, sig_type, h4_regime, portfolio_scale=portfolio_scale,
+        )
 
     def _run_training_cycle(self) -> TrainingOutcome | None:
         trade_frame = self.memory.fetch_training_frame()
@@ -756,6 +830,7 @@ class AutonomousTradingSystem:
 
         # Best/worst trade via trade history
         best_pnl = worst_pnl = best_type = worst_type = None
+        sig_type_stats: list[str] = []
         try:
             history = self.memory.trade_history(limit=500)
             if not history.empty and "closed_at" in history.columns:
@@ -770,6 +845,17 @@ class AutonomousTradingSystem:
                     if "signal_type" in day_trades.columns:
                         best_type = day_trades.loc[best_idx, "signal_type"]
                         worst_type = day_trades.loc[worst_idx, "signal_type"]
+                        # Per-signaaltype stats voor vandaag
+                        for stype, grp in day_trades.groupby("signal_type"):
+                            st_pnls = grp["pnl"].fillna(0.0)
+                            st_wins = int((st_pnls > 0).sum())
+                            st_total = len(st_pnls)
+                            st_pnl = float(st_pnls.sum())
+                            wr_st = st_wins / st_total if st_total > 0 else 0.0
+                            emoji = "✅" if st_pnl >= 0 else "❌"
+                            sig_type_stats.append(
+                                f"  {str(stype):<14} {st_total}T  {wr_st:.0%}WR  {emoji}€{st_pnl:+,.0f}"
+                            )
         except Exception:
             pass
 
@@ -804,6 +890,11 @@ class AutonomousTradingSystem:
         if signals_today > 0:
             executed = trade_count
             lines.append(f"  Signalen:     {signals_today} gedetecteerd → {executed} uitgevoerd")
+
+        if sig_type_stats:
+            lines.append("")
+            lines.append("PER SIGNAALTYPE (vandaag)")
+            lines.extend(sig_type_stats)
 
         if best_pnl is not None and trade_count > 0:
             lines.append("")

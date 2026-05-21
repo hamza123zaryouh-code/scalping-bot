@@ -4,7 +4,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from core.strategy_engine import DEFAULT_CFG, SignalResult, StrategyEngine, get_engine
+from core.strategy_engine import AGGRESSIVE_FTMO_CFG, DEFAULT_CFG, EXPERT_CFG, SCALP_CFG, SIGNAL_PRIORITY, SignalResult, StrategyEngine, get_engine
 
 
 def _make_ohlcv(n: int = 200, base_price: float = 2300.0) -> pd.DataFrame:
@@ -34,6 +34,18 @@ class TestDefaultConfig:
 
     def test_sl_atr_positive(self):
         assert DEFAULT_CFG["sl_atr"] > 0
+
+
+class TestExpertConfig:
+    def test_risk_hierarchy(self):
+        assert EXPERT_CFG["risk_a"] > EXPERT_CFG["risk_b"] > EXPERT_CFG["risk_c"]
+
+    def test_signal_priority_has_no_scalp_signals(self):
+        assert not any(signal.startswith("S_") for signal in SIGNAL_PRIORITY)
+
+    def test_aggressive_mode_is_riskier_than_scalp(self):
+        assert AGGRESSIVE_FTMO_CFG["risk_b"] > SCALP_CFG["risk_b"]
+        assert AGGRESSIVE_FTMO_CFG["max_dag"] >= SCALP_CFG["max_dag"]
 
 
 class TestGetEngine:

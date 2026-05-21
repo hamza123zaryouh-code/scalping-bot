@@ -100,7 +100,19 @@ Useful URLs:
 - API docs: `http://localhost:8000/api/docs`
 - Streamlit dashboard: `http://localhost:8501`
 - Webapp: `http://localhost:3000`
+- Expert command center: `http://localhost:3000/command-center`
 - Health: `http://localhost:8000/api/v1/health`
+
+## Operator command center
+
+The webapp now opens on `/command-center` and acts as the primary operator surface for:
+
+- live WebSocket event tape for execution, risk, sentiment, heartbeat and news updates
+- Telegram readiness and recent operator audit actions
+- runtime control state, open position radar and FTMO guard posture
+- buffered live logs and stream health telemetry in one screen
+
+This is intended to be the highest-signal view for running the bot in paper, demo or live workflows.
 
 ## Schema management
 

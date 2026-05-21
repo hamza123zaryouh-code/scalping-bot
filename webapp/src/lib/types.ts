@@ -248,3 +248,90 @@ export interface APIResponse<T> {
   message?: string;
   error?: string;
 }
+
+export interface TelegramActionLog {
+  id: number;
+  telegram_user_id: string;
+  telegram_username: string | null;
+  action: string;
+  status: string;
+  details: Record<string, unknown>;
+  created_at: string | null;
+}
+
+export interface ControlCommandRecord {
+  id: number;
+  command: string;
+  status: string;
+  requested_by: string;
+  payload: Record<string, unknown>;
+  source: string;
+  result_message?: string | null;
+  error_message?: string | null;
+  created_at?: string | null;
+  executed_at?: string | null;
+}
+
+export interface LogEntry {
+  timestamp: string;
+  level: string;
+  logger: string;
+  message: string;
+  seq: number;
+}
+
+export interface CommandCenterData {
+  timestamp: string;
+  stream: {
+    connected_clients: number;
+    available_channels: string[];
+    last_log_seq: number;
+    heartbeat_present: boolean;
+    heartbeat_age_seconds: number | null;
+    stale: boolean;
+    bot_state_present: boolean;
+  };
+  heartbeat: {
+    status: string;
+    trading_bot_running: boolean;
+    ts: string;
+    [key: string]: unknown;
+  };
+  runtime: {
+    engine_status: Record<string, unknown>;
+    control_state: {
+      bot_active?: boolean;
+      trading_paused?: boolean;
+      signals_enabled?: boolean;
+      emergency_stop?: boolean;
+      updated_at?: string;
+      [key: string]: unknown;
+    };
+    circuit_breaker: Record<string, unknown>;
+    ftmo_guard: Record<string, unknown>;
+    news_guard: Record<string, unknown>;
+    sentiment: Record<string, unknown>;
+    last_signal?: SignalRecord | null;
+    open_positions: Position[];
+  };
+  telegram: {
+    configured: boolean;
+    owner_configured: boolean;
+    api_key_configured: boolean;
+    backend_base_url: string;
+    recent_actions: TelegramActionLog[];
+    recent_commands: ControlCommandRecord[];
+  };
+  news: {
+    cache_present: boolean;
+    danger_score: number;
+    high_impact_count: number;
+    composite_sentiment: number;
+    should_pause_trading: boolean;
+    top_keywords: string[];
+  };
+  logs: {
+    records: LogEntry[];
+    tail_file_available: boolean;
+  };
+}

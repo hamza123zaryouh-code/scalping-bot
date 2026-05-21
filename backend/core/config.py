@@ -15,6 +15,8 @@ _DEV_ONLY_SECRET = "DEVELOPMENT_ONLY_SECRET_KEY_DO_NOT_USE_IN_PRODUCTION"
 _DEFAULT_DEV_CORS = (
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
     "http://localhost:8501",
     "http://127.0.0.1:8501",
 )

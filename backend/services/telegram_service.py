@@ -348,7 +348,8 @@ class TelegramService:
 
     def compare_strategy_versions(self) -> dict[str, Any]:
         baseline = self._best_v16_summary()
-        latest = self._backtests.get_history()[0] if self._backtests.get_history() else None
+        history = self._backtests.get_history()
+        latest = history[0] if history else None
         if not baseline or not latest:
             return {"summary": "Vergelijking baseline vs laatste backtest nog niet beschikbaar.", "data": {}}
 
